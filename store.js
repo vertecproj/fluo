@@ -220,6 +220,12 @@
         version = rows[0].version; onStatus("ok");
       } catch (e) { pending = pending || state; onStatus("err"); }
     },
+    /* outro aparelho salvou depois de mim? (consulta leve: só o número da versão) */
+    async changed() {
+      if (mode !== "cloud" || pending || !user) return false;
+      const { data, error } = await sb.from("vaults").select("version").eq("user_id", user.id).maybeSingle();
+      return !error && !!data && !pending && data.version > version;
+    },
     async reload() { const row = await pull(); version = row.version; return JSON.parse(dec.decode(await open(dataKey, row.data))); },
 
     async signOut() {

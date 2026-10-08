@@ -241,7 +241,7 @@ function pgInicio() {
   const open = l.filter(x => !x.paid), rec = recTotal();
   const pill = (attrs, t, v, c = "") => `<button class="pill" ${attrs}>${t}<b class="${c}">${v}</b></button>`;
   const pills = (l.length && !open.length ? pill('data-a="nav" data-p="pagar"', "Contas", "pagas ✓", "pos") : pill('data-a="nav" data-p="pagar"', "Pagar", M(falta))) + (rec > 0.005 ? pill('data-a="nav" data-p="carteira"', "Receber", M(rec), "pos") : "") + pill('data-a="verext" data-v="entrada"', "Entrou", M(c.ent)) + pill('data-a="verext" data-v="saida"', "Saiu", M(c.sai)) + pill('data-a="nav" data-p="invest"', "Investiu", M(c.inv));
-  const isLate = x => diffM(cur, NOW) < 0 || cur === NOW && x.dia < hoje;
+  const isLate = x => diffM(cur, NOW) > 0 || cur === NOW && x.dia < hoje;
   const go = x => x.fat ? `data-a="conta" data-id="${x.fat}"` : x.pessoa ? `data-a="pessoa" data-id="${x.pessoa}"` : `data-a="view" data-src="${x.src}" data-id="${esc(x.id)}"`;
   const bills = open.slice(0, 10).map(x => `<div class="bill"><div class="bill-in" ${go(x)}><span class="bill-k">dia ${x.dia}${isLate(x) ? '<span class="tag late">atrasada</span>' : ""}</span><b>${M(x.v)}</b><small>${esc(x.n)}</small></div><button class="${isLate(x) ? "primary" : "secondary"}" data-a="pay" data-k="${esc(x.key)}">Paguei</button></div>`).join("");
   const gast = iniTab === "conta" ? `<div class="bars">${bars(porConta, id => conta(id).cor, id => conta(id).n, Object.values(c.porConta).reduce((t, v) => t + v, 0), "conta") || `<p class="empty">Sem saídas.</p>`}</div>`
@@ -261,7 +261,7 @@ function receberHtml() {
   return `<div class="h"><h2>Quem ainda não te pagou</h2><span class="aside">${M(l.reduce((t, r) => t + amt(r), 0))}</span></div>` + l.map(r => `<div class="ln" style="grid-template-columns:minmax(0,1fr) auto"><div data-a="pessoa" data-id="${r.p.id}" style="min-width:0;cursor:pointer"><div class="t">${esc(r.p.n)}${r.said ? '<span class="tag">disse que pagou</span>' : ""}</div><div class="s">${r.oweT ? `te deve ${brl(r.recT)}, menos ${brl(r.oweT)} que você deve a ela` : "ainda não pagou"}</div></div><span class="v">${M(amt(r))}</span>${r.said ? `<div style="grid-column:1/-1"><button class="chip" data-a="recebido" data-id="${r.p.id}">Confirmar que recebi</button></div>` : ""}</div>`).join("");
 }
 function payRow(x) {
-  const hoje = new Date().getDate(), late = !x.paid && (diffM(cur, NOW) < 0 || cur === NOW && x.dia < hoje);
+  const hoje = new Date().getDate(), late = !x.paid && (diffM(cur, NOW) > 0 || cur === NOW && x.dia < hoje);
   return `<div class="ln pay ${x.paid ? "paid" : ""}"><button class="ck" data-a="pay" data-k="${esc(x.key)}" aria-pressed="${x.paid}" aria-label="${x.paid ? "Pago, reabrir" : "Marcar como pago"}">✓</button><span class="d">dia ${x.dia}</span>
     <div ${x.fat ? `data-a="conta" data-id="${x.fat}"` : x.pessoa ? `data-a="pessoa" data-id="${x.pessoa}"` : `data-a="view" data-src="${x.src}" data-id="${esc(x.id)}"`} style="min-width:0;cursor:pointer"><div class="t">${esc(x.n)}${late ? '<span class="tag late">atrasada</span>' : ""}</div><div class="s">${esc(x.sub)}</div></div><span class="v">${M(x.v)}</span></div>`;
 }
@@ -270,7 +270,7 @@ function payRow(x) {
 function pgPagar() {
   const l = contasDoMes(cur), tot = l.reduce((t, x) => t + x.v, 0), pago = l.filter(x => x.paid).reduce((t, x) => t + x.v, 0), hoje = new Date().getDate();
   const g = { late: [], soon: [], later: [], done: [] };
-  l.forEach(x => { if (x.paid) g.done.push(x); else if (diffM(cur, NOW) < 0 || cur === NOW && x.dia < hoje) g.late.push(x); else if (cur === NOW && x.dia <= hoje + 7) g.soon.push(x); else g.later.push(x); });
+  l.forEach(x => { if (x.paid) g.done.push(x); else if (diffM(cur, NOW) > 0 || cur === NOW && x.dia < hoje) g.late.push(x); else if (cur === NOW && x.dia <= hoje + 7) g.soon.push(x); else g.later.push(x); });
   const sec = (t, arr, ex = "") => arr.length ? `<div class="h"><h2>${t}</h2><span class="aside">${ex || M(arr.reduce((s, x) => s + x.v, 0))}</span></div>${arr.map(payRow).join("")}` : "";
   return `<section class="hero"><div><div class="kick">Falta pagar em ${label(cur)}</div><div class="big money num"><small>R$</small>${nbr(tot - pago)}</div>
     <p class="sent">${l.length ? `${l.filter(x => x.paid).length} de ${l.length} contas pagas.` : "Nenhuma conta a pagar neste mês."}</p></div>
@@ -917,6 +917,18 @@ addEventListener("visibilitychange", () => {
   if (S && hiddenAt && Date.now() - hiddenAt >= 5 * 60 * 1000 && Store.user && Store.bioEnabled(Store.user.email)) lockApp();
   hiddenAt = 0;
 });
+/* ao vivo: se outro aparelho salvou, puxa e redesenha sozinho (a cada 5 s com o app à vista e sem janela aberta) */
+let syncing = false, remoteSt = null; // remoteSt: dados já baixados esperando a janela fechar
+async function liveSync() {
+  if (syncing || !S || locked || document.visibilityState !== "visible" || !$("#sheet").hidden || document.activeElement?.matches?.("input,textarea")) return;
+  syncing = true;
+  try {
+    if (!remoteSt && await Store.changed?.()) remoteSt = await Store.reload();
+    if (remoteSt && $("#sheet").hidden) { S = remoteSt; remoteSt = null; S.pagos ??= {}; S.metas ??= []; S.eventos ??= []; S.prefs ??= { theme: "auto", priv: false }; applyTheme(); render(false); }
+  } catch (e) {} finally { syncing = false; }
+}
+setInterval(liveSync, 5000);
+addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") setTimeout(liveSync, 300); });
 function enter(state) {
   clearInterval(window.__lgT); S = state; S.pagos ??= {}; S.metas ??= []; S.eventos ??= []; S.prefs ??= { theme: "auto", priv: false };
   $("#auth").hidden = true; $("#app").hidden = false; $("#dock").hidden = false;
