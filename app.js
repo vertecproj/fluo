@@ -26,6 +26,7 @@ const PAL = ["#2d6a4d","#c4573b","#4b5fa8","#c98a12","#a8497e","#2f86a8","#7a8a3
 
 let tlStart = null, lastPage = null, futSel = null, bioOk = false, ajTab = "sistema";
 let S = null, cur = NOW, page = "inicio", plano = "parc", filtro = "tudo", agrupar = "dia", busca = "", FS = null;
+const frName = h => S.pessoas.find(p => p.amigo?.handle === h)?.n || "@" + h; // amigos aparecem pelo nome; o @ só serve para adicionar
 const FR = { profile: null, friends: [], inbox: [], last: 0, sig: "" }; // amigos por @ (social.js)
 const cat = id => S.cats.find(c => c.id === id) || (id === "__amigos" ? { id, n: "Divisões com amigos", cor: "#8f7aa8", tipo: "saida" } : { id, n: "Sem categoria", cor: "#8b8f85", tipo: "saida" });
 const conta = id => S.contas.find(c => c.id === id) || { id, n: "Sem conta", cor: "#8b8f85", tipo: "debito" };
@@ -115,7 +116,7 @@ function inboxIdx(s, k) {
 }
 function monthItems(k) {
   const out = [];
-  FR.inbox.filter(s => !s.ack).forEach(s => { const n = inboxIdx(s, k); if (n > 0) out.push({ id: "in:" + s.sid, sid: s.sid, uid: s.uid, rec: s.rec || [], src: "amigo", tipo: "saida", d: s.d, v: s.v, cat: "__amigos", conta: "", dia: Math.min(28, s.dia || 10), idx: n, n: s.n || 1, from: s.handle }); });
+  FR.inbox.filter(s => !s.ack && !s.hello).forEach(s => { const n = inboxIdx(s, k); if (n > 0) out.push({ id: "in:" + s.sid, sid: s.sid, uid: s.uid, rec: s.rec || [], src: "amigo", tipo: "saida", d: s.d, v: s.v, cat: "__amigos", conta: "", dia: Math.min(28, s.dia || 10), idx: n, n: s.n || 1, from: s.handle }); });
   S.recorrentes.forEach(r => { if (diffM(r.inicio, k) >= 0 && (!r.fim || diffM(k, r.fim) >= 0)) out.push({ ...r, src: "rec", dia: r.dia || 1 }); });
   S.parcelas.forEach(p => { const i = diffM(startM(p), k); if (i >= 0 && i < p.n && (!p.fim || diffM(k, p.fim) >= 0)) out.push({ ...p, tipo: "saida", src: "parc", idx: i + 1, dia: +p.data.slice(8) }); });
   S.avulsos.forEach(a => { if ((a.fat || a.data.slice(0, 7)) === k) out.push({ ...a, src: "avulso", dia: +a.data.slice(8) }); });
@@ -152,7 +153,7 @@ function contasDoMes(k) {
     out.push({ key: "pn:" + p.id, pessoa: p.id, paid: r.paid, n: p.n, v, dia: r.pc ? cardVenc(r.pc) : Math.min(...r.am.map(x => x.dia)),
       sub: r.recT ? `você deve ${brl(r.oweT)} − ela te deve ${brl(r.recT)}` : r.cardV ? "o que você usou do cartão dela" : "você deve" });
   });
-  c.it.filter(x => x.src === "amigo" && !used.has(x.sid)).forEach(x => out.push({ key: "amigo:" + x.sid, n: x.d + (x.n > 1 ? ` ${x.idx}/${x.n}` : ""), sub: "você deve a @" + x.from, dia: x.dia, v: x.v, src: x.src, id: x.id, paid: isPaid(k, x) }));
+  c.it.filter(x => x.src === "amigo" && !used.has(x.sid)).forEach(x => out.push({ key: "amigo:" + x.sid, n: x.d + (x.n > 1 ? ` ${x.idx}/${x.n}` : ""), sub: "você deve a " + frName(x.from), dia: x.dia, v: x.v, src: x.src, id: x.id, paid: isPaid(k, x) }));
   out.forEach(o => { if (o.paid === undefined) o.paid = !!S.pagos[k]?.[o.key]; });
   return out.sort((a, b) => a.paid - b.paid || a.dia - b.dia);
 }
@@ -277,7 +278,7 @@ function pgExtrato() {
   const gl = agrupar === "conta" ? k => conta(k).n : agrupar === "cat" ? k => cat(k).n : k => "Dia " + k;
   const grp = {}; it.forEach(x => (grp[gk(x)] ??= []).push(x));
   const keys = Object.keys(grp).sort(agrupar === "dia" ? (a, b) => b - a : (a, b) => grp[b].reduce((t, x) => t + x.v, 0) - grp[a].reduce((t, x) => t + x.v, 0));
-  const line = x => `<button class="ln" data-a="view" data-src="${x.src}" data-id="${x.id}"><span class="d">${agrupar === "dia" ? "" : "dia " + x.dia}</span><span style="min-width:0"><span class="t" style="display:block">${esc(x.d)}${x.ev && evento(x.ev) ? `<span class="tag ev">${esc(evento(x.ev).n)}</span>` : ""}${x.rach?.length ? `<span class="tag">dividido</span>` : ""}${x.src === "amigo" ? `<span class="tag">@${esc(x.from)}</span>` : ""}</span><span class="s" style="display:block">${esc(cat(x.cat).n)} · ${x.src === "amigo" ? "você deve" : esc(conta(x.conta).n)}${x.src === "parc" || x.src === "amigo" && x.n > 1 ? ` · ${x.idx}/${x.n}` : x.src === "rec" ? " · todo mês" : ""}</span></span><span class="v ${x.tipo === "entrada" ? "pos" : ""}">${x.tipo === "entrada" ? "+" : ""}${M(x.v)}</span></button>`;
+  const line = x => `<button class="ln" data-a="view" data-src="${x.src}" data-id="${x.id}"><span class="d">${agrupar === "dia" ? "" : "dia " + x.dia}</span><span style="min-width:0"><span class="t" style="display:block">${esc(x.d)}${x.ev && evento(x.ev) ? `<span class="tag ev">${esc(evento(x.ev).n)}</span>` : ""}${x.rach?.length ? `<span class="tag">dividido</span>` : ""}${x.src === "amigo" ? `<span class="tag">${esc(frName(x.from))}</span>` : ""}</span><span class="s" style="display:block">${esc(cat(x.cat).n)} · ${x.src === "amigo" ? "você deve" : esc(conta(x.conta).n)}${x.src === "parc" || x.src === "amigo" && x.n > 1 ? ` · ${x.idx}/${x.n}` : x.src === "rec" ? " · todo mês" : ""}</span></span><span class="v ${x.tipo === "entrada" ? "pos" : ""}">${x.tipo === "entrada" ? "+" : ""}${M(x.v)}</span></button>`;
   const totEnt = it.filter(x => x.tipo === "entrada").reduce((t, x) => t + x.v, 0), totSai = it.filter(x => x.tipo === "saida").reduce((t, x) => t + x.v, 0);
   return `<div class="tools"><input class="search" id="busca" type="search" placeholder="Buscar nome, categoria ou cartão" value="${esc(busca)}" aria-label="Buscar">
      <div class="seg">${[["tudo", "Tudo"], ["saida", "Saídas"], ["entrada", "Entradas"], ["invest", "Investido"], ["aberto", "A pagar"]].map(([k, t]) => `<button data-a="filtro" data-v="${k}" aria-pressed="${filtro === k}">${t}</button>`).join("")}</div>
@@ -316,7 +317,7 @@ function itemSheet(src, id) {
   const paid = isS && isPaid(cur, it);
   openSheet(`<div class="kick">${{ entrada: "Entrada", invest: "Investimento", saida: "Saída" }[it.tipo] || ""} · ${label(cur)}</div><h3>${esc(it.d)}</h3><div class="big money num" style="font-size:52px;margin:14px 0">${brl(it.v)}</div>
     ${isS ? `<p class="note">${paid ? "Pago ✓" : "Ainda não pago"}</p>` : ""}
-    ${row("Categoria", it.cat && it.cat !== "__amigos" ? esc(cat(it.cat).n) : it.cat ? "Divisões com amigos" : "")}${src === "amigo" ? row("Você deve a", "@" + esc(it.from)) : row(isS ? "Pago com" : "Conta", cc ? esc(cc.n) : "")}${row("Quando", quando)}${extra}${row("Evento", it.ev && evento(it.ev) ? esc(evento(it.ev).n) : "")}${div}
+    ${row("Categoria", it.cat && it.cat !== "__amigos" ? esc(cat(it.cat).n) : it.cat ? "Divisões com amigos" : "")}${src === "amigo" ? row("Você deve a", esc(frName(it.from))) : row(isS ? "Pago com" : "Conta", cc ? esc(cc.n) : "")}${row("Quando", quando)}${extra}${row("Evento", it.ev && evento(it.ev) ? esc(evento(it.ev).n) : "")}${div}
     ${src !== "amigo" ? `<div class="acts"><button class="secondary" data-a="edit" data-src="${src}" data-id="${esc(id)}">Editar</button></div>` : ""}`, true);
 }
 function catSheet(id) {
@@ -396,7 +397,7 @@ function pgPlano() {
 }
 function divHtml() {
   const c = calc(cur), ids = Object.keys(c.recPor), dv = c.it.filter(x => x.src === "amigo");
-  const devoHtml = dv.length ? `<div class="h"><h2>Você deve</h2><span class="aside">${M(dv.reduce((t, x) => t + x.v, 0))}</span></div>` + dv.map(x => payRow({ key: "amigo:" + x.sid, n: x.d + (x.n > 1 ? ` ${x.idx}/${x.n}` : ""), sub: "@" + x.from, dia: x.dia, v: x.v, paid: isPaid(cur, x) })).join("") : "";
+  const devoHtml = dv.length ? `<div class="h"><h2>Você deve</h2><span class="aside">${M(dv.reduce((t, x) => t + x.v, 0))}</span></div>` + dv.map(x => payRow({ key: "amigo:" + x.sid, n: x.d + (x.n > 1 ? ` ${x.idx}/${x.n}` : ""), sub: frName(x.from), dia: x.dia, v: x.v, paid: isPaid(cur, x) })).join("") : "";
   if (!ids.length) return devoHtml || `<p class="empty">Nenhuma divisão em ${label(cur)}.</p>`;
   return `<p class="lede">A receber em ${label(cur)}: <b class="money">${brl(c.recebe)}</b></p>` + ids.map(id => {
     const p = pessoa(id), l = c.recPor[id], t = l.reduce((s, x) => s + x.v, 0), got = !!S.pagos[cur]?.["rach:" + id];
@@ -464,11 +465,18 @@ function pgAjustes() {
   const tabs = `<div class="tools"><div class="seg">${[["sistema", "Sistema"], ["cadastros", "Cadastros"], ["social", "Social" + (nPed ? " · " + nPed : "")]].map(([k, t]) => `<button data-a="ajTab" data-v="${k}" aria-pressed="${ajTab === k}">${t}</button>`).join("")}</div></div>`;
   if (ajTab === "cadastros") return tabs + ajCadastros();
   if (ajTab === "social") return tabs + ajSocial();
-  return tabs + `<div class="h"><h2>Aparência</h2></div>${seg("tema", [{ v: "auto", l: "Noite musgo" }, { v: "light", l: "Papel" }], th).replace(/data-a="set" data-f="tema"/g, 'data-a="tema"')}
-   <div class="h"><h2>Ao abrir o Fluo</h2></div>${(() => { const em = Store.user?.email || "", m = Store.remembered ? "direto" : Store.bioEnabled(em) ? "bio" : "senha"; return `<div class="seg">${[["direto", "Entrar direto"], ...(bioOk ? [["bio", "Biometria"]] : []), ["senha", "Pedir a senha"]].map(([v, l]) => `<button data-a="openMode" data-v="${v}" aria-pressed="${m === v}">${l}</button>`).join("")}</div>`; })()}
-   <div class="h"><h2>Avisos</h2></div><div class="acts" style="margin-top:12px"><button class="secondary" data-a="avisosOn">Ativar notificações do aparelho</button></div>
-   <div class="h"><h2>Conta</h2></div><p class="lede">${esc(Store.user?.email || "")}</p>
-   <div class="acts"><button class="secondary" data-a="chPw">Trocar senha</button><button class="secondary" data-a="backup">Baixar backup</button><button class="secondary" data-a="importar">Restaurar backup</button><button class="secondary" data-a="sobre">Sobre e contato</button><button class="secondary" data-a="sair">Sair</button><button class="danger" data-a="apagar">Apagar tudo</button></div>`;
+  const em = Store.user?.email || "", m = Store.remembered ? "direto" : Store.bioEnabled(em) ? "bio" : "senha", on = "Notification" in window && Notification.permission === "granted" && ls.get("fluo.avisos") === "1";
+  const opt = (a, v, l, cur) => `<button data-a="${a}" data-v="${v}" data-val="${v}" aria-pressed="${cur === v}">${l}</button>`;
+  const row = (t, hint, ctl) => `<div class="cfg-row"><div class="cfg-t"><b>${t}</b><span>${hint}</span></div>${ctl}</div>`;
+  const go = (a, t, c = "") => `<button class="cfg-go ${c}" data-a="${a}"><span>${t}</span><i aria-hidden="true">›</i></button>`;
+  return tabs + `<div class="cfg"><div class="h"><h2>Aparência</h2></div>
+    ${row("Tema", "Automático usa o claro de dia e o escuro à noite.", `<div class="seg">${[["hora", "Automático"], ["auto", "Noite musgo"], ["light", "Papel"]].map(([v, l]) => opt("tema", v, l, th)).join("")}</div>`)}
+    <div class="h"><h2>Segurança</h2></div>
+    ${row("Ao abrir o Fluo", "Com biometria, volta a pedir depois de 5 min em segundo plano.", `<div class="seg">${[["direto", "Entrar direto"], ...(bioOk ? [["bio", "Biometria"]] : []), ["senha", "Senha"]].map(([v, l]) => opt("openMode", v, l, m)).join("")}</div>`)}
+    <div class="h"><h2>Avisos</h2></div>
+    ${row("Notificações", on ? "Ativadas neste aparelho." : "Faturas, contas e pessoas que pagaram.", on ? "" : `<button class="secondary cfg-btn" data-a="avisosOn">Ativar</button>`)}
+    <div class="h"><h2>Conta</h2></div><p class="lede cfg-mail">${esc(em)}</p>
+    <div class="cfg-list">${go("chPw", "Trocar senha")}${go("backup", "Baixar backup")}${go("importar", "Restaurar backup")}${go("sobre", "Sobre e contato")}${go("sair", "Sair")}${go("apagar", "Apagar tudo", "danger")}</div></div>`;
 }
 function ajCadastros() {
   return `<div class="h"><h2>Categorias</h2><button class="aside" data-a="novaCat">+ nova</button></div>${S.cats.map(c => `<button class="ln" data-a="editCat" data-id="${c.id}" style="grid-template-columns:14px minmax(0,1fr) auto"><i style="width:10px;height:10px;border-radius:3px;background:${c.cor}"></i><span class="t">${esc(c.n)}</span><span class="s">${{ saida: "saída", entrada: "entrada", invest: "investimento" }[c.tipo]}</span></button>`).join("")}
@@ -477,13 +485,15 @@ function ajCadastros() {
 function ajSocial() {
   if (!window.Social?.available()) return `<p class="empty">Indisponível.</p>`;
   const me = FR.profile, pend = FR.friends.filter(f => f.status === "pending"), amigos = FR.friends.filter(f => f.status === "accepted");
-  return `<div class="h"><h2>Meu @</h2></div>
+  return `<div class="h"><h2>Meu nome</h2></div>
+   <div class="me"><span class="me-h" style="font-size:22px">${esc(S.perfil?.nome ? S.perfil.nome + " " + (S.perfil.sobrenome || "") : "Sem nome ainda")}</span><span class="me-b"><button class="secondary" data-a="meuNome">${S.perfil?.nome ? "Mudar" : "Informar"}</button></span></div><p class="note">É o nome que seus amigos veem. Você adiciona amigos pelo @, mas eles aparecem pelo nome.</p>
+   <div class="h"><h2>Meu @</h2></div>
    ${me ? `<div class="me"><span class="me-h">@${esc(me.handle)}</span><span class="me-b"><button class="secondary" data-a="copiarHandle">Copiar</button><button class="secondary" data-a="meuHandle">Mudar</button></span></div><p class="note">Quem souber seu @ pode te pedir amizade.</p>` : `<p class="empty">${FR.err ? "Não consegui criar seu @ agora. Tente de novo mais tarde." : "Criando seu @…"}</p>`}
    <div class="h"><h2>Adicionar amigo</h2></div>
    <div class="addf"><input class="in" id="addH" placeholder="@usuario" autocapitalize="none" autocomplete="off" spellcheck="false" aria-label="@ do amigo"><button class="primary" data-a="amigoEnviar">Enviar pedido</button></div>
    ${pend.length ? `<div class="h"><h2>Pedidos</h2></div>${pedidosHtml()}` : ""}
    <div class="h"><h2>Amigos</h2><span class="aside">${amigos.length}</span></div>
-   ${amigos.map(f => { const p = S.pessoas.find(x => x.amigo?.uid === f.uid), cor = p?.cor || "#8f7aa8"; return `<div class="ln person" style="grid-template-columns:38px minmax(0,1fr) auto"><span class="av" style="--c:${cor};color:${readableOn(cor)}">${esc(f.handle[0].toUpperCase())}</span><span><span class="t" style="display:block">@${esc(f.handle)}</span><span class="s" style="display:block">amigo</span></span><button class="chip" data-a="amigoRem" data-uid="${f.uid}">Desfazer</button></div>`; }).join("") || `<p class="empty">Nenhum ainda.</p>`}`;
+   ${amigos.map(f => { const p = S.pessoas.find(x => x.amigo?.uid === f.uid), cor = p?.cor || "#8f7aa8"; return `<div class="ln person" style="grid-template-columns:38px minmax(0,1fr) auto"><span class="av" style="--c:${cor};color:${readableOn(cor)}">${esc((p?.n || f.handle).replace(/^@/, "")[0].toUpperCase())}</span><span><span class="t" style="display:block">${esc(p?.n || "@" + f.handle)}</span><span class="s" style="display:block">@${esc(f.handle)}</span></span><button class="chip" data-a="amigoRem" data-uid="${f.uid}">Desfazer</button></div>`; }).join("") || `<p class="empty">Nenhum ainda.</p>`}`;
 }
 function catForm(id) {
   const c = id ? cat(id) : null;
@@ -593,8 +603,8 @@ async function refreshSocial() {
   try {
     FR.profile = await Social.profile();
     if (!FR.profile && !FR.autoTried) { FR.autoTried = true; await autoHandle(); }
-    if (FR.profile) { FR.friends = await Social.friends(); linkFriends(); FR.inbox = S.keys ? await Social.inbox(S.keys, FR.friends) : []; await pushShares(); }
-    const sig = JSON.stringify([FR.profile?.handle, FR.friends.map(f => [f.id, f.status]), FR.inbox.map(s => [s.sid, s.v, s.ini, s.n, s.fim, s.d, s.rec, s.meses])]);
+    if (FR.profile) { FR.friends = await Social.friends(); FR.inbox = S.keys ? await Social.inbox(S.keys, FR.friends) : []; FR.names = Object.fromEntries(FR.inbox.filter(s => s.hello).map(s => [s.uid, s.nome])); linkFriends(); await pushShares(); }
+    const sig = JSON.stringify([FR.profile?.handle, FR.friends.map(f => [f.id, f.status]), FR.inbox.map(s => [s.sid, s.v, s.ini, s.n, s.fim, s.d, s.rec, s.meses, s.nome])]);
     FR.friends.filter(f => f.status === "pending" && !f.mine).forEach(f => localNotify("fluo.fr." + f.id, "Pedido de amizade", "@" + f.handle + " quer te adicionar"));
     softRender(sig); notifyAcks();
   } catch (e) { /* tabelas de amigos ainda não existem ou sem rede: o app segue normal */ }
@@ -614,7 +624,7 @@ async function autoHandle() {
     Store.save(S); await Store.flush(); // a chave privada precisa estar no cofre ANTES de publicar a pública
     for (let i = 0; i < 6; i++) {
       const h = i === 0 ? base : (base + (100 + Math.floor(Math.random() * 9000))).slice(0, 20), r = await Social.setHandle(h, S.keys.pub);
-      if (r.status === "ok") { FR.profile = { handle: r.handle, pub: S.keys.pub }; toast("Seu @ é @" + r.handle + ". Dá para mudar em Ajustes → Social."); return; }
+      if (r.status === "ok") { FR.profile = { handle: r.handle, pub: S.keys.pub }; toast(i === 0 ? "Seu @ é @" + r.handle + ". Dá para mudar em Ajustes → Social." : "@" + base + " já está em uso. Seu @ ficou @" + r.handle + ". Dá para mudar em Ajustes → Social."); return; }
       if (r.status !== "taken") break;
     }
     FR.err = true;
@@ -625,8 +635,9 @@ function linkFriends() {
   const acc = FR.friends.filter(f => f.status === "accepted"); let changed = false;
   acc.forEach(f => {
     const p = S.pessoas.find(x => x.amigo?.uid === f.uid);
-    if (!p) { S.pessoas.push({ id: uid(), n: "@" + f.handle, cor: PAL[(S.pessoas.length + 3) % PAL.length], amigo: { uid: f.uid, handle: f.handle } }); changed = true; }
-    else if (p.amigo.handle !== f.handle) { if (p.n === "@" + p.amigo.handle) p.n = "@" + f.handle; p.amigo.handle = f.handle; changed = true; }
+    const nm = FR.names?.[f.uid];
+    if (!p) { S.pessoas.push({ id: uid(), n: nm || "@" + f.handle, cor: PAL[(S.pessoas.length + 3) % PAL.length], amigo: { uid: f.uid, handle: f.handle, nome: nm } }); changed = true; }
+    else if (p.amigo.handle !== f.handle || (nm && p.amigo.nome !== nm)) { const auto = p.n === "@" + p.amigo.handle || (p.amigo.nome && p.n === p.amigo.nome); p.amigo.handle = f.handle; if (nm) p.amigo.nome = nm; if (auto) p.n = nm || "@" + f.handle; changed = true; }
   });
   S.pessoas.forEach(p => { if (p.amigo && !acc.some(f => f.uid === p.amigo.uid)) { delete p.amigo; changed = true; } });
   if (changed) Store.save(S);
@@ -643,7 +654,9 @@ async function pushShares() {
     });
     /* avisa quem me enviou a divisão de quais meses eu marquei como pagos (a resposta também é um "share", só que de volta) */
     S.acks ??= {};
-    FR.inbox.filter(s => !s.ack && frs[s.uid]).forEach(s => { const meses = Object.keys(S.pagos).filter(m => S.pagos[m]["amigo:" + s.sid]).sort(); if (!meses.length && !S.acks[s.sid]) return; const id = S.acks[s.sid] ??= crypto.randomUUID(); want[id] = { to: s.uid, obj: { ack: 1, of: s.sid, meses } }; });
+    FR.inbox.filter(s => !s.ack && !s.hello && frs[s.uid]).forEach(s => { const meses = Object.keys(S.pagos).filter(m => S.pagos[m]["amigo:" + s.sid]).sort(); if (!meses.length && !S.acks[s.sid]) return; const id = S.acks[s.sid] ??= crypto.randomUUID(); want[id] = { to: s.uid, obj: { ack: 1, of: s.sid, meses } }; });
+    const meu = S.perfil?.nome ? (S.perfil.nome + " " + (S.perfil.sobrenome || "")).trim() : ""; S.hello ??= {};
+    if (meu) Object.values(frs).forEach(f => { const id = S.hello[f.uid] ??= crypto.randomUUID(); want[id] = { to: f.uid, obj: { hello: 1, nome: meu } }; });
     S.avulsos.forEach(it => add(it, "avulso")); S.parcelas.forEach(it => add(it, "parc")); S.recorrentes.forEach(it => add(it, "rec"));
     let dirty = false;
     for (const [sid, w] of Object.entries(want)) { const j = JSON.stringify(w.obj); if (S.sent[sid]?.j === j && S.sent[sid]?.to === w.to) continue; try { await Social.send(sid, w.to, frs[w.to].pub, S.keys, w.obj, false); S.sent[sid] = { to: w.to, j }; dirty = true; } catch (e) {} }
@@ -660,6 +673,11 @@ function pedidosHtml() {
   return FR.friends.filter(f => f.status === "pending").map(f => f.mine
     ? `<div class="ln" style="grid-template-columns:minmax(0,1fr) auto"><span><span class="t" style="display:block">@${esc(f.handle)}</span><span class="s" style="display:block">aguardando resposta</span></span><button class="chip" data-a="amigoDel" data-id="${f.id}">Cancelar</button></div>`
     : `<div class="ln" style="grid-template-columns:minmax(0,1fr) auto"><span><span class="t" style="display:block">@${esc(f.handle)}</span><span class="s" style="display:block">quer ser seu amigo</span></span><span style="display:flex;gap:8px"><button class="chip" data-a="amigoResp" data-id="${f.id}" data-ok="1">Aceitar</button><button class="chip" data-a="amigoResp" data-id="${f.id}">Recusar</button></span></div>`).join("");
+}
+function perfilForm(first) {
+  const p = S.perfil || {};
+  form(first ? "Como você se chama?" : "Meu nome", { nome: p.nome || "", sob: p.sobrenome || "", err: "" }, f => `${first ? `<p class="lede">Seus amigos vão ver o seu nome, não só o @.</p>` : ""}${fld("Nome", `<input class="in" data-f="nome" value="${esc(f.nome)}" autocomplete="given-name" autofocus>`)}${fld("Sobrenome", `<input class="in" data-f="sob" value="${esc(f.sob)}" autocomplete="family-name">`)}${f.err ? `<div class="err">${esc(f.err)}</div>` : ""}<div class="acts"><button class="primary" data-a="save">Salvar</button></div>`);
+  FS.save = () => { const n = FS.nome.trim(), so = FS.sob.trim(); if (!n || !so) { FS.err = "Preencha nome e sobrenome."; return FS.draw(); } S.perfil = { nome: n, sobrenome: so }; closeSheet(); commit("Nome salvo"); if (first) setTimeout(askNotif, 700); };
 }
 function handleForm() {
   form("Mudar meu @", { h: FR.profile?.handle || "", err: "" }, f => `${fld("Seu @", `<input class="in" data-f="h" value="${esc(f.h)}" placeholder="ex.: ana_souza" autocapitalize="none" autocomplete="off" spellcheck="false" autofocus>`)}${f.err ? `<div class="err">${esc(f.err)}</div>` : ""}<div class="acts"><button class="primary" data-a="save">Salvar</button><button class="secondary" data-a="x">Cancelar</button></div>`);
@@ -695,6 +713,7 @@ const A = {
   rachTog: d => { const i = FS.rach.findIndex(r => r.p === d.p); if (i >= 0) FS.rach.splice(i, 1); else FS.rach.push({ p: d.p, m: "igual" }); FS.draw(); },
   rachMode: d => { const r = FS.rach.find(x => x.p === d.p); if (r) r.m = d.m; FS.draw(); },
   recebido: d => { const r = relacao(pessoa(d.id), cur), st = !S.pagos[cur]?.["rach:" + d.id]; setRel(r, st); Store.save(S); schedulePush(); const open = !$("#sheet").hidden; render(false); if (open) pessoaSheet(d.id); toast(st ? "Recebido ✓" : "Reaberto"); },
+  meuNome: () => perfilForm(false),
   meuHandle: () => handleForm(),
   ajTab: d => { ajTab = d.v; render(false); if (d.v === "social" && Date.now() - FR.last > 15000) refreshSocial(); },
   copiarHandle: () => { navigator.clipboard?.writeText("@" + FR.profile.handle).then(() => toast("@ copiado"), () => toast("Não foi possível copiar")); },
@@ -758,7 +777,8 @@ addEventListener("keydown", e => { if ((e.key === "n" || e.key === "+") && !e.ct
 /* ---------- shell ---------- */
 const PAGES = [["inicio", "Início", pgInicio], ["pagar", "Pagar", pgPagar], ["extrato", "Extrato", pgExtrato], ["carteira", "Carteira", pgCarteira], ["plano", "Compromissos", pgPlano], ["futuro", "Futuro", pgFuturo], ["ajustes", "Ajustes", pgAjustes]];
 function applyTheme() {
-  const r = document.documentElement, t = S?.prefs?.theme || "auto"; if (t === "auto" || t === "dark") delete r.dataset.theme; else r.dataset.theme = t;
+  const r = document.documentElement; let t = S?.prefs?.theme || "auto"; if (t === "hora") { const h = new Date().getHours(); t = h >= 6 && h < 18 ? "light" : "auto"; } // automático: claro de dia, escuro à noite
+  if (t === "auto" || t === "dark") delete r.dataset.theme; else r.dataset.theme = t;
   PRIV = !!S?.prefs?.priv; document.body.classList.toggle("priv", PRIV); const hid = !!S?.prefs?.priv, eye = $("#eye");
   eye.innerHTML = hid
     ? '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.6 10.6 0 0112 5c6 0 9.5 7 9.5 7a17 17 0 01-3.2 4M6.3 6.7C3.9 8.4 2.5 12 2.5 12S6 19 12 19c1.6 0 3-.4 4.2-1"/><path d="M9.9 9.9a3 3 0 004.2 4.2"/></svg>'
@@ -845,6 +865,7 @@ function lockApp() {
   $("#lkOut").onclick = async () => { try { await Store.signOut(); } catch (e) {} location.reload(); };
   setTimeout(() => $("#lkGo")?.click(), 350);
 }
+setInterval(() => { if (S?.prefs?.theme === "hora") applyTheme(); }, 60000);
 addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") { hiddenAt = Date.now(); return; }
   if (S && hiddenAt && Date.now() - hiddenAt >= 5 * 60 * 1000 && Store.user && Store.bioEnabled(Store.user.email)) lockApp();
@@ -853,7 +874,7 @@ addEventListener("visibilitychange", () => {
 function enter(state) {
   clearInterval(window.__lgT); S = state; S.pagos ??= {}; S.metas ??= []; S.eventos ??= []; S.prefs ??= { theme: "auto", priv: false };
   $("#auth").hidden = true; $("#app").hidden = false; $("#dock").hidden = false;
-  $("#who").textContent = Store.user?.email || ""; Store.bioSupported().then(v => { bioOk = v; if (page === "ajustes") render(false); }); applyTheme(); render(true); setTimeout(pushNotices, 1500); setTimeout(askNotif, 3000);
+  $("#who").textContent = Store.user?.email || ""; Store.bioSupported().then(v => { bioOk = v; if (page === "ajustes") render(false); }); applyTheme(); render(true); setTimeout(pushNotices, 1500); setTimeout(() => { if (!S.perfil?.nome) perfilForm(true); else askNotif(); }, 2500);
   FR.profile = null; FR.friends = []; FR.inbox = []; FR.sig = ""; FR.autoTried = false; FR.err = false; setTimeout(refreshSocial, 900);
   if (!window.__frT) window.__frT = setInterval(() => { if (document.visibilityState === "visible" && S && Date.now() - FR.last > 80000) refreshSocial(); }, 30000);
 }
@@ -917,7 +938,7 @@ function showAuth(msg, startMode, preEmail) {
       <div class="lg-links"><button type="button" class="lg-link" data-m="forgot">Esqueci a senha</button></div>
       <div class="lg-or"><span>ou</span></div><button type="button" class="secondary lg-demo-btn" data-m="up">Criar conta</button><button type="button" class="lg-about" data-a="sobre">Sobre e contato</button>`,
     up: () => `<h2>Criar conta</h2><p class="lg-hint">Enviamos um código de 6 dígitos para confirmar o e-mail.</p>${emailF}${E()}<button class="primary lg-go" type="submit">Enviar código</button>${back}`,
-    upcode: () => `<h2>Confirmar e-mail</h2><p class="lg-hint">Código enviado para <b>${esc(email0)}</b>. Veja também o spam.</p>${otp}${pw("aPw", "Senha (mínimo 8 caracteres)", "new-password")}${pw("aPw2", "Repita a senha", "new-password")}${remember()}${E()}<button class="primary lg-go" type="submit">Criar conta</button><button type="button" class="lg-link" data-m="up">Reenviar código</button>`,
+    upcode: () => `<h2>Confirmar e-mail</h2><p class="lg-hint">Código enviado para <b>${esc(email0)}</b>. Veja também o spam.</p>${otp}<div class="lg-2"><label class="lg-f"><span>Nome</span><input id="aNome" required autocomplete="given-name"></label><label class="lg-f"><span>Sobrenome</span><input id="aSob" required autocomplete="family-name"></label></div>${pw("aPw", "Senha (mínimo 8 caracteres)", "new-password")}${pw("aPw2", "Repita a senha", "new-password")}${remember()}${E()}<button class="primary lg-go" type="submit">Criar conta</button><button type="button" class="lg-link" data-m="up">Reenviar código</button>`,
     forgot: () => `<h2>Esqueci a senha</h2><p class="lg-hint">Enviamos um código de 6 dígitos para o seu e-mail.</p>${emailF}${E()}<button class="primary lg-go" type="submit">Enviar código</button>${back}`,
     code: () => `<h2>Nova senha</h2><p class="lg-hint">Código enviado para <b>${esc(email0)}</b>. Para abrir seus dados também precisamos do código de recuperação guardado na criação da conta.</p>${otp}${pw("aPw", "Nova senha", "new-password")}${rcode}${E()}<button class="primary lg-go" type="submit">Trocar senha e entrar</button><button type="button" class="lg-link" data-m="forgot">Reenviar código</button>`,
     rec: () => `<h2>Destravar dados</h2><p class="lg-hint">Sua senha mudou. Digite o código de recuperação guardado na criação da conta.</p>${rcode}${pw("aPw", "Sua senha", "current-password")}${E()}<button class="primary lg-go" type="submit">Destravar</button>`,
@@ -963,7 +984,9 @@ function showAuth(msg, startMode, preEmail) {
         if (pass !== $("#aPw2").value) return err("As senhas não são iguais.");
         const v = await Store.verifySignup(email, $("#aOtp").value.trim());
         if (v.status !== "ok") return err({ wrong: "Código incorreto.", expired: "Código vencido. Peça outro.", locked: "Muitas tentativas. Peça um novo código." }[v.status] || "Não foi possível confirmar o código.");
-        const r = await Store.signUp(email, pass, baseState());
+        const st0 = baseState(); st0.perfil = { nome: $("#aNome").value.trim(), sobrenome: $("#aSob").value.trim() };
+        if (!st0.perfil.nome || !st0.perfil.sobrenome) return err("Preencha nome e sobrenome.");
+        const r = await Store.signUp(email, pass, st0);
         if (r.confirmEmail) { mode = "in"; msg = "Conta criada! Confirme pelo e-mail e depois entre."; return draw(); }
         return showRecovery(r.recoveryCode, r.state);
       }

@@ -465,3 +465,16 @@ html:has(#sheet:not([hidden])),html:has(#sheet:not([hidden])) body{overflow:hidd
 .lock-in{width:min(360px,100%);display:flex;flex-direction:column;gap:12px;text-align:center;align-items:center}
 .lock-in .mark{width:64px;height:48px}.lock-in h2{font:800 28px/1.1 var(--serif);letter-spacing:-.02em}.lock-in p{color:var(--mute)}
 .lock-in .primary{width:100%;margin-top:10px;padding:13px}
+
+.cfg .h{margin-top:30px}.cfg .h:first-child{margin-top:8px}
+.cfg-row{display:flex;flex-direction:column;gap:12px;padding:14px 0}
+.cfg-t{display:flex;flex-direction:column;gap:3px}.cfg-t b{font-weight:600}.cfg-t span{font-size:13px;color:var(--mute)}
+.cfg .seg{display:flex;width:100%;flex-wrap:nowrap}.cfg .seg button{flex:1;padding:9px 4px;white-space:nowrap;text-align:center}
+.cfg-btn{align-self:flex-start}
+.cfg-mail{margin:2px 0 10px;word-break:break-all}
+.cfg-list{border-top:1px solid var(--line)}
+.cfg-go{display:flex;justify-content:space-between;align-items:center;width:100%;padding:15px 2px;border-bottom:1px solid var(--line);text-align:left;font-size:15px}
+.cfg-go i{font-style:normal;color:var(--mute);font-size:20px}.cfg-go:hover{background:var(--paper2)}
+.cfg-go.danger{color:var(--neg)}.cfg-go.danger i{color:var(--neg)}
+
+.lg-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
