@@ -24,7 +24,7 @@ const fnum = v => String(Math.round(v * 100) / 100).replace(".", ",");
 const NOW = today().slice(0, 7);
 const PAL = ["#2d6a4d","#c4573b","#4b5fa8","#c98a12","#a8497e","#2f86a8","#7a8a3a","#8a6a9e","#7a3fb0","#5b6b57","#1f6f8b","#b5604a"];
 
-let tlStart = null, lastPage = null, futSel = null, bioOk = false, ajTab = "sistema";
+let tlStart = null, lastPage = null, futSel = null, bioOk = false, ajTab = "sistema", iniTab = "cat";
 let S = null, cur = NOW, page = "inicio", plano = "parc", filtro = "tudo", agrupar = "dia", busca = "", FS = null;
 const frName = h => S.pessoas.find(p => p.amigo?.handle === h)?.n || "@" + h; // amigos aparecem pelo nome; o @ só serve para adicionar
 const FR = { profile: null, friends: [], inbox: [], last: 0, sig: "" }; // amigos por @ (social.js)
@@ -144,7 +144,7 @@ function calc(k) {
 function contasDoMes(k) {
   const c = calc(k), out = [];
   S.contas.filter(a => a.tipo === "credito" && !a.pessoa).forEach(a => { const v = c.porConta[a.id]; if (v) out.push({ key: "card:" + a.id, fat: a.id, n: "Fatura " + a.n, sub: "cartão de crédito", dia: cardVenc(a), v }); });
-  c.it.filter(x => x.tipo === "saida" && x.src === "rec" && conta(x.conta).tipo !== "credito" && !conta(x.conta).pessoa).forEach(x => out.push({ key: x.id, n: x.d, sub: cat(x.cat).n + " · " + conta(x.conta).n, dia: x.dia, v: x.v }));
+  c.it.filter(x => x.tipo === "saida" && x.src === "rec" && conta(x.conta).tipo !== "credito" && !conta(x.conta).pessoa).forEach(x => out.push({ key: x.id, n: x.d, sub: cat(x.cat).n + " · " + conta(x.conta).n, dia: x.dia, v: x.v, src: x.src, id: x.id }));
   /* pessoas: uma linha só com a relação (o que você deve menos o que ela te deve) */
   const used = new Set();
   S.pessoas.forEach(p => {
@@ -187,7 +187,7 @@ function openSheet(html, modal) {
   const sh = $("#sheet"); sh.classList.add("modal");
   sh.innerHTML = `<div class="scrim" data-x></div><div class="panel" role="dialog" aria-modal="true"><button class="x" data-x aria-label="Fechar">✕</button>${html}</div>`;
   sh.hidden = false; sh.classList.remove("out");
-  const f = sh.querySelector("[autofocus]"); if (f) f.focus();
+  const f = sh.querySelector("[autofocus]"); if (f) { if (matchMedia("(pointer:fine)").matches) f.focus(); else f.blur(); } // no toque não abre o teclado sozinho
 }
 function closeSheet() {
   const sh = $("#sheet"); if (sh.hidden) return; FS = null;
@@ -237,16 +237,25 @@ function pgInicio() {
   let hor = "";
   for (let i = 1; i <= 14; i++) { const a = calc(addM(cur, i - 1)).parc, b = calc(addM(cur, i)).parc; if (b < a - 0.5) { hor = `Em <b>${label(addM(cur, i))}</b> suas parcelas caem de ${M(a)} para ${M(b)} — <span class="hl">${brl(a - b)} a menos por mês</span>.`; break; } }
   const rows = l.filter(x => !x.paid).slice(0, 5).map(payRow).join("");
-  return `<section class="hero"><div><div class="kick">Saldo de ${label(cur)}</div><div class="big money num"><small>R$</small>${!PRIV && c.saldo < 0 ? "−" : ""}${nbr(c.saldo)}</div><p class="sent">${frase}</p></div>
-    <div class="facts"><div class="fact" data-a="verext" data-v="entrada" role="button" tabindex="0" style="cursor:pointer"><span>Entrou</span><b class="pos">${M(c.ent)}</b></div><div class="fact" data-a="verext" data-v="saida" role="button" tabindex="0" style="cursor:pointer"><span>Saiu</span><b>${M(c.sai)}</b></div><div class="fact" data-a="verext" data-v="invest" role="button" tabindex="0" style="cursor:pointer"><span>Investiu</span><b>${M(c.inv)}</b></div><div class="fact" data-a="verext" data-v="aberto" role="button" tabindex="0" style="cursor:pointer"><span>Falta pagar</span><b>${M(falta)}</b></div>${c.recPend > 0 ? `<div class="fact"><span>A receber</span><b class="pos">${M(c.recPend)}</b></div>` : ""}</div></section>
-   ${avisosHtml()}${receberHtml()}<div class="river">${seg_.map(([n, v, col], i) => `<i title="${n}" style="width:${v / base * 100}%;background:${col};animation-delay:${i * 70}ms"></i>`).join("")}</div>
-   <div class="legend">${seg_.map(([n, v, col]) => `<span style="--c:${col}">${n} <b class="money">${brl0(v)}</b></span>`).join("")}</div>
-   <div class="h"><h2>Linha do tempo</h2></div><div class="tl">${tl}</div>
-   <div class="cols"><div><div class="h"><h2>Próximos vencimentos</h2><button class="aside" data-a="nav" data-p="pagar">ver todos →</button></div>${rows || `<p class="empty">Nada pendente.</p>`}</div>
-    <div><div class="h"><h2>Para onde foi</h2></div><div class="bars">${bars(topCat, id => cat(id).cor, id => cat(id).n, c.sai, "catv") || `<p class="empty">Sem saídas.</p>`}</div></div></div>
-   <div class="cols"><div><div class="h"><h2>Por forma de pagamento</h2></div><div class="bars">${bars(porConta, id => conta(id).cor, id => conta(id).n, Object.values(c.porConta).reduce((t, v) => t + v, 0), "conta") || `<p class="empty">Sem saídas.</p>`}</div></div>
-    <div><div class="h"><h2>No horizonte</h2></div><p class="sent">${hor || "—"}</p></div></div>`;
+  /* Início: número, pílulas com os totais, próximas contas em cartões e um gráfico por vez */
+  const open = l.filter(x => !x.paid), rec = recTotal();
+  const pill = (attrs, t, v, c = "") => `<button class="pill" ${attrs}>${t}<b class="${c}">${v}</b></button>`;
+  const pills = pill('data-a="nav" data-p="pagar"', "Pagar", M(falta)) + (rec > 0.005 ? pill('data-a="nav" data-p="carteira"', "Receber", M(rec), "pos") : "") + pill('data-a="verext" data-v="entrada"', "Entrou", M(c.ent)) + pill('data-a="verext" data-v="saida"', "Saiu", M(c.sai)) + pill('data-a="nav" data-p="invest"', "Investiu", M(c.inv));
+  const isLate = x => diffM(cur, NOW) < 0 || cur === NOW && x.dia < hoje;
+  const go = x => x.fat ? `data-a="conta" data-id="${x.fat}"` : x.pessoa ? `data-a="pessoa" data-id="${x.pessoa}"` : `data-a="view" data-src="${x.src}" data-id="${esc(x.id)}"`;
+  const bills = open.slice(0, 10).map(x => `<div class="bill"><div class="bill-in" ${go(x)}><span class="bill-k">dia ${x.dia}${isLate(x) ? '<span class="tag late">atrasada</span>' : ""}</span><b>${M(x.v)}</b><small>${esc(x.n)}</small></div><button class="${isLate(x) ? "primary" : "secondary"}" data-a="pay" data-k="${esc(x.key)}">Paguei</button></div>`).join("");
+  const gast = iniTab === "conta" ? `<div class="bars">${bars(porConta, id => conta(id).cor, id => conta(id).n, Object.values(c.porConta).reduce((t, v) => t + v, 0), "conta") || `<p class="empty">Sem saídas.</p>`}</div>`
+    : iniTab === "mes" ? `<div class="tl">${tl}</div>${hor ? `<p class="sent" style="margin-top:14px">${hor}</p>` : ""}`
+    : `<div class="bars">${bars(topCat, id => cat(id).cor, id => cat(id).n, c.sai, "catv") || `<p class="empty">Sem saídas.</p>`}</div>`;
+  return `<section class="hero ini"><div><div class="kick">Saldo de ${label(cur)}</div><div class="big money num"><small>R$</small>${!PRIV && c.saldo < 0 ? "−" : ""}${nbr(c.saldo)}</div>${c.saldo < 0 || c.ent === 0 && c.sai === 0 ? `<p class="sent">${frase}</p>` : ""}</div></section>
+    <div class="pills">${pills}</div>
+    <div class="h"><h2>Próximas contas</h2><button class="aside" data-a="nav" data-p="pagar">ver todas →</button></div>
+    ${bills ? `<div class="car">${bills}</div>` : `<p class="empty">${l.length ? "Tudo pago neste mês." : "Nenhuma conta neste mês."}</p>`}
+    ${receberHtml()}${avisosHtml()}
+    <div class="h"><h2>Gastos</h2></div><div class="tools"><div class="seg">${[["cat", "Categoria"], ["conta", "Pagamento"], ["mes", "Meses"]].map(([k, t]) => `<button data-a="iniTab" data-v="${k}" aria-pressed="${iniTab === k}">${t}</button>`).join("")}</div></div>
+    ${gast}`;
 }
+const recTotal = () => S.pessoas.map(p => relacao(p, cur)).reduce((t, r) => t + (r.said ? Math.max(0, r.recT - r.oweT) : Math.max(0, r.recOpen - r.oweOpen)), 0);
 function receberHtml() {
   const amt = r => r.said ? Math.max(0, r.recT - r.oweT) : r.recOpen - r.oweOpen, l = S.pessoas.map(p => relacao(p, cur)).filter(r => r.said || r.recOpen - r.oweOpen > 0.005); if (!l.length) return "";
   return `<div class="h"><h2>Quem ainda não te pagou</h2><span class="aside">${M(l.reduce((t, r) => t + amt(r), 0))}</span></div>` + l.map(r => `<div class="ln" style="grid-template-columns:minmax(0,1fr) auto"><div data-a="pessoa" data-id="${r.p.id}" style="min-width:0;cursor:pointer"><div class="t">${esc(r.p.n)}${r.said ? '<span class="tag">disse que pagou</span>' : ""}</div><div class="s">${r.oweT ? `te deve ${brl(r.recT)}, menos ${brl(r.oweT)} que você deve a ela` : "ainda não pagou"}</div></div><span class="v">${M(amt(r))}</span>${r.said ? `<div style="grid-column:1/-1"><button class="chip" data-a="recebido" data-id="${r.p.id}">Confirmar que recebi</button></div>` : ""}</div>`).join("");
@@ -267,6 +276,33 @@ function pgPagar() {
     <p class="sent">${l.length ? `${l.filter(x => x.paid).length} de ${l.length} contas pagas.` : "Nenhuma conta a pagar neste mês."}</p></div>
     <div><div class="river" style="margin:0"><i style="width:${tot ? pago / tot * 100 : 0}%;background:var(--pos)"></i><i style="flex:1;background:var(--paper2);animation:none"></i></div><div class="legend" style="margin-top:10px"><span style="--c:var(--pos)">pago <b class="money">${brl0(pago)}</b></span><span style="--c:var(--paper2)">de <b class="money">${brl0(tot)}</b></span></div></div></section>
    ${sec("Atrasadas", g.late)}${sec("Esta semana", g.soon)}${sec(cur === NOW ? "Depois" : "A pagar", g.later)}${sec("Pagas", g.done)}`;
+}
+
+/* ---------- Investimentos: soma dos aportes (o app não conhece rendimento nem resgate) ---------- */
+function investInfo(k) {
+  const its = [...S.recorrentes.filter(r => r.tipo === "invest").map(r => ({ r, src: "rec", ini: r.inicio })), ...S.avulsos.filter(a => a.tipo === "invest").map(a => ({ r: a, src: "avulso", ini: a.fat || a.data.slice(0, 7) }))];
+  const ate = (x, m) => { if (x.src === "avulso") return diffM(x.ini, m) >= 0 ? x.r.v : 0; const end = x.r.fim && diffM(x.r.fim, m) > 0 ? x.r.fim : m, n = diffM(x.ini, end) + 1; return n > 0 ? n * x.r.v : 0; };
+  const acc = m => its.reduce((t, x) => t + ate(x, m), 0), g = {};
+  its.forEach(x => { const t = ate(x, k); if (!t) return; const o = g[norm(x.r.d)] ??= { n: x.r.d, total: 0, mensal: 0, ini: x.ini, last: x };
+    o.total += t; if (diffM(o.ini, x.ini) < 0) o.ini = x.ini; if (x.src === "rec" && (!x.r.fim || diffM(k, x.r.fim) >= 0)) { o.mensal += x.r.v; o.last = x; } });
+  return { acc, grupos: Object.values(g).sort((a, b) => b.total - a.total) };
+}
+function pgInvest() {
+  const c = calc(cur), inf = investInfo(cur), tot = inf.acc(cur), ano = tot - inf.acc(cur.slice(0, 4) - 1 + "-12");
+  const ks = Array.from({ length: 12 }, (_, i) => addM(cur, i - 11)), vs = ks.map(inf.acc), mx = Math.max(...vs, 1);
+  const mes = c.it.filter(x => x.tipo === "invest");
+  const ap = ks.map((k, i) => vs[i] - inf.acc(addM(k, -1))), com = ap.filter(v => v > 0), media = com.length ? com.reduce((t, v) => t + v, 0) / com.length : 0; // aportes mês a mês
+  let seq = 0; for (let i = ap.length - 1; i >= 0 && ap[i] > 0; i--) seq++;
+  if (!tot && !mes.length) return `<p class="empty">Nada guardado ainda.</p><div class="acts"><button class="primary" data-a="novoAporte">Lançar um aporte</button></div>`;
+  return `<section class="hero ini"><div><div class="kick">Guardado até ${label(cur)}</div><div class="big money num"><small>R$</small>${nbr(tot)}</div>
+    </div></section>
+   <div class="pills"><span class="pill">Neste mês<b>${M(c.inv)}</b></span><span class="pill">Em ${cur.slice(0, 4)}<b>${M(ano)}</b></span><span class="pill">Média por mês<b>${M(media)}</b></span>${c.ent ? `<span class="pill">Da renda do mês<b>${Math.round(c.inv / c.ent * 100)}%</b></span>` : ""}${seq > 1 ? `<span class="pill">Meses seguidos<b>${seq}</b></span>` : ""}</div>
+   <div class="h"><h2>Quanto já guardei</h2><span class="aside">12 meses</span></div>
+   <div class="ibars">${ks.map((k, i) => `<div class="${k === cur ? "on" : ""}"><i style="height:${Math.max(2, vs[i] / mx * 100)}%"></i><small>${short(k).slice(0, 3)}</small></div>`).join("")}</div>
+   <div class="h"><h2>Onde está</h2><button class="aside" data-a="novoAporte">+ aporte</button></div>
+   ${inf.grupos.map(g => `<button class="ln" data-a="view" data-src="${g.last.src}" data-id="${g.last.r.id}" style="grid-template-columns:minmax(0,1fr) auto"><span style="min-width:0"><span class="t" style="display:block">${esc(g.n)}</span><span class="s" style="display:block">${g.mensal ? brl(g.mensal) + " por mês · " : ""}desde ${short(g.ini)}</span></span><span class="v">${M(g.total)}</span><div class="track" style="grid-column:1/-1;height:6px;background:var(--paper2);border-radius:3px;overflow:hidden"><i style="display:block;height:100%;width:${g.total / tot * 100}%;background:var(--hi)"></i></div></button>`).join("")}
+   <div class="h"><h2>Aportes de ${label(cur)}</h2><span class="aside">${M(c.inv)}</span></div>
+   ${mes.map(x => `<button class="ln" data-a="view" data-src="${x.src}" data-id="${x.id}"><span class="d">dia ${x.dia}</span><span style="min-width:0"><span class="t" style="display:block">${esc(x.d)}</span><span class="s" style="display:block">${esc(conta(x.conta).n)}${x.src === "rec" ? " · todo mês" : ""}</span></span><span class="v">${M(x.v)}</span></button>`).join("") || `<p class="empty">Nenhum aporte neste mês.</p>`}`;
 }
 
 /* ---------- Extrato ---------- */
@@ -537,10 +573,10 @@ function parseSmart(text, F) {
   const words = orig.replace(/\d+\s*x\b/i, " ").replace(/\d+(?:[.,]\d{1,2})?/g, " ").split(/\s+/).filter(w => w && !stop.has(norm(w)));
   F.d = words.join(" "); F.d = F.d.charAt(0).toUpperCase() + F.d.slice(1); F.cat = "";
 }
-function lancar(it, src) {
+function lancar(it, src, tipo0) {
   const edit = !!it, last = S.avulsos[S.avulsos.length - 1];
   const F = edit ? { src, tipo: it.tipo || "saida", d: it.d, v: fnum(it.v), data: it.data || cur + "-" + pad(it.dia || 1), dia: it.dia || 1, rep: src === "rec" ? "mes" : src === "parc" ? "parc" : "uma", n: it.n || 2, tot: false, cat: it.cat, conta: it.conta, ev: it.ev || "", rach: JSON.parse(JSON.stringify(it.rach || [])), scope: "all" }
-    : { tipo: "saida", d: "", v: "", data: cur === NOW ? today() : cur + "-01", rep: "uma", n: 2, tot: false, cat: "", conta: last?.conta || S.contas[0].id, ev: "", rach: [], cal: false, calM: cur };
+    : { tipo: tipo0 || "saida", d: "", v: "", data: cur === NOW ? today() : cur + "-01", rep: "uma", n: 2, tot: false, cat: "", conta: last?.conta || S.contas[0].id, ev: "", rach: [], cal: false, calM: cur };
   const body = f => {
     const catId = f.cat || guessCat(f.d, f.tipo), cats = S.cats.filter(c => c.tipo === f.tipo), isRec = f.src === "rec", isParc = f.src === "parc", locked = edit;
     const dates = [{ v: today(), l: "Hoje" }, { v: addDays(today(), -1), l: "Ontem" }], dsel = dates.some(d => d.v === f.data);
@@ -715,6 +751,8 @@ const A = {
   recebido: d => { const r = relacao(pessoa(d.id), cur), st = !S.pagos[cur]?.["rach:" + d.id]; setRel(r, st); Store.save(S); schedulePush(); const open = !$("#sheet").hidden; render(false); if (open) pessoaSheet(d.id); toast(st ? "Recebido ✓" : "Reaberto"); },
   meuNome: () => perfilForm(false),
   meuHandle: () => handleForm(),
+  novoAporte: () => lancar(null, null, "invest"),
+  iniTab: d => { iniTab = d.v; render(false); },
   ajTab: d => { ajTab = d.v; render(false); if (d.v === "social" && Date.now() - FR.last > 15000) refreshSocial(); },
   copiarHandle: () => { navigator.clipboard?.writeText("@" + FR.profile.handle).then(() => toast("@ copiado"), () => toast("Não foi possível copiar")); },
   amigoEnviar: async () => {
@@ -772,10 +810,14 @@ document.addEventListener("input", e => {
   if (t.dataset.f === "fecha" || t.dataset.f === "venc") { const fe = $('#fb [data-f="fecha"]'), ve = $('#fb [data-f="venc"]'), F = +FS.fecha, V = +FS.venc; if (fe && ve) { ve.placeholder = F && !V ? vencDeFecha(F) + " (calculado)" : "ex.: 10"; fe.placeholder = V && !F ? fechaDeVenc(V) + " (calculado)" : "ex.: 3"; } }
   if (["v", "n", "tot"].includes(t.dataset.f) && FS.rep === "parc") { const keep = t.selectionStart; FS.draw(); const nx = $(`#fb [data-f="${t.dataset.f}"]`); if (nx) { nx.focus(); try { nx.setSelectionRange(keep, keep); } catch (e) {} } }
 });
+/* no toque, a tecla do teclado vira "OK" e só fecha o teclado (não pula de campo nem salva) */
+const TOUCH = () => !matchMedia("(pointer:fine)").matches;
+new MutationObserver(() => document.querySelectorAll("#app input:not([enterkeyhint]), #sheet input:not([enterkeyhint])").forEach(i => { i.enterKeyHint = "done"; })).observe(document.body, { childList: true, subtree: true });
+addEventListener("keydown", e => { if (e.key === "Enter" && TOUCH() && e.target.matches?.("#app input, #sheet input")) { e.preventDefault(); e.stopImmediatePropagation(); e.target.blur(); } }, true);
 addEventListener("keydown", e => { if ((e.key === "n" || e.key === "+") && !e.ctrlKey && !e.metaKey && !e.altKey && !e.target.closest("input,textarea,select,[contenteditable]") && $("#sheet").hidden && !$("#app").hidden) { e.preventDefault(); A.lancar(); } if (e.key === "Enter" && e.target.id === "addH") { e.preventDefault(); A.amigoEnviar(); } if (e.key === "Escape") closeSheet(); if (e.key === "Enter" && FS && e.target.matches("input") && e.target.dataset.f) { e.preventDefault(); FS.save(); } });
 
 /* ---------- shell ---------- */
-const PAGES = [["inicio", "Início", pgInicio], ["pagar", "Pagar", pgPagar], ["extrato", "Extrato", pgExtrato], ["carteira", "Carteira", pgCarteira], ["plano", "Compromissos", pgPlano], ["futuro", "Futuro", pgFuturo], ["ajustes", "Ajustes", pgAjustes]];
+const PAGES = [["inicio", "Início", pgInicio], ["pagar", "Pagar", pgPagar], ["extrato", "Extrato", pgExtrato], ["carteira", "Carteira", pgCarteira], ["invest", "Investimentos", pgInvest], ["plano", "Compromissos", pgPlano], ["futuro", "Futuro", pgFuturo], ["ajustes", "Ajustes", pgAjustes]];
 function applyTheme() {
   const r = document.documentElement; let t = S?.prefs?.theme || "auto"; if (t === "hora") { const h = new Date().getHours(); t = h >= 6 && h < 18 ? "light" : "auto"; } // automático: claro de dia, escuro à noite
   if (t === "auto" || t === "dark") delete r.dataset.theme; else r.dataset.theme = t;
@@ -807,10 +849,10 @@ function render(anim = true) {
   const p = PAGES.find(x => x[0] === page) || PAGES[0], v = $("#view"), y = scrollY, same = lastPage === page;
   const oldNums = same ? numEls(v).map(parseMoney) : [], oldBars = BARS.map(([sel, prop]) => same ? [...v.querySelectorAll(sel)].map(e => e.style[prop]) : []), tlOld = v.querySelector(".tl")?.scrollLeft;
   $("#nav").innerHTML = PAGES.map(([k, t]) => `<button data-a="nav" data-p="${k}" ${k === page ? 'aria-current="page"' : ""}><span>${t}${k === "ajustes" && FR.friends.some(f => f.status === "pending" && !f.mine) ? '<i class="dot"></i>' : ""}</span></button>`).join("");
-  const grp = ["pagar", "plano", "futuro"], dk = (p, t, on) => `<button data-a="nav" data-p="${p}" ${on ? 'aria-current="page"' : ""}>${t}</button>`;
-  $("#dock").innerHTML = dk("inicio", "Início", page === "inicio") + dk("pagar", "Contas", grp.includes(page)) + `<button class="plus" id="dockAdd" aria-label="Lançar" data-a="lancar">+</button>` + dk("extrato", "Extrato", page === "extrato") + dk("carteira", "Carteira", page === "carteira");
+  const grp = ["pagar", "plano", "futuro"], grp2 = ["carteira", "invest"], dk = (p, t, on) => `<button data-a="nav" data-p="${p}" ${on ? 'aria-current="page"' : ""}>${t}</button>`;
+  $("#dock").innerHTML = dk("inicio", "Início", page === "inicio") + dk("pagar", "Contas", grp.includes(page)) + `<button class="plus" id="dockAdd" aria-label="Lançar" data-a="lancar">+</button>` + dk("extrato", "Extrato", page === "extrato") + dk("carteira", "Carteira", grp2.includes(page));
   $("#cfg").setAttribute("aria-pressed", page === "ajustes");
-  const subnav = grp.includes(page) ? `<div class="seg subnav">${[["pagar", "A pagar"], ["plano", "Compromissos"], ["futuro", "Futuro"]].map(([k, t]) => `<button data-a="nav" data-p="${k}" aria-pressed="${page === k}">${t}</button>`).join("")}</div>` : "";
+  const subnav = grp.includes(page) ? `<div class="seg subnav">${[["pagar", "A pagar"], ["plano", "Compromissos"], ["futuro", "Futuro"]].map(([k, t]) => `<button data-a="nav" data-p="${k}" aria-pressed="${page === k}">${t}</button>`).join("")}</div>` : grp2.includes(page) ? `<div class="seg subnav">${[["carteira", "Carteira"], ["invest", "Investimentos"]].map(([k, t]) => `<button data-a="nav" data-p="${k}" aria-pressed="${page === k}">${t}</button>`).join("")}</div>` : "";
   $("#mlabel").textContent = label(cur); $("#mlabel").title = cur === NOW ? "Mês atual" : "Voltar para o mês atual"; $("#today").hidden = cur === NOW;
   const keepAnim = anim && !same;
   v.className = "view" + (keepAnim ? " rise" : " still"); v.innerHTML = `<div>${subnav}${p[2]()}</div>`;
