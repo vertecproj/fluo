@@ -66,7 +66,7 @@
     const wrapped = await seal(await prfKey(prf), await crypto.subtle.exportKey("raw", dataKey));
     localStorage.setItem(BIO_PREFIX + email.toLowerCase(), JSON.stringify({ credId: b64(new Uint8Array(cred.rawId)), salt: b64(salt), wrapped }));
   }
-  async function bioUnlock(email) {
+  async function bioAssert(email) { // pede a biometria e devolve a chave de dados (não mexe no estado)
     const rec = bioRecord(email); if (!rec) throw new Error("NO_BIO");
     const salt = ub64(rec.salt);
     const assertion = await navigator.credentials.get({ publicKey: {
@@ -75,8 +75,10 @@
     } });
     const prf = assertion.getClientExtensionResults().prf?.results?.first;
     if (!prf) throw new Error("PRF_UNSUPPORTED");
-    const raw = await open(await prfKey(prf), rec.wrapped);
-    dataKey = await crypto.subtle.importKey("raw", raw, "AES-GCM", true, ["encrypt", "decrypt"]);
+    return open(await prfKey(prf), rec.wrapped);
+  }
+  async function bioUnlock(email) {
+    dataKey = await crypto.subtle.importKey("raw", await bioAssert(email), "AES-GCM", true, ["encrypt", "decrypt"]);
   }
 
   async function pull() {
@@ -189,6 +191,7 @@
       mode = "cloud"; version = row.version;
       return { state: JSON.parse(dec.decode(await open(dataKey, row.data))) };
     },
+    async bioCheck(email) { await bioAssert(email); }, // só confirma que é a pessoa (usado no bloqueio após 5 min em segundo plano)
     bioForget(email) { try { localStorage.removeItem(BIO_PREFIX + email.toLowerCase()); } catch (e) {} },
 
     async changePassword(newPassword) {

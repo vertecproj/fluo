@@ -78,12 +78,18 @@ function notices() {
       if (k < 0) out.push({ id: "due:" + a.id + m, tone: "late", title: `Fatura ${a.n} atrasada (${fd(dd)})`, body: brl(v) });
       else if (k <= 3) out.push({ id: "due:" + a.id + m, tone: "due", title: `Fatura ${a.n} vence ${k === 0 ? "hoje" : k === 1 ? "amanhã" : "em " + k + " dias"} (${fd(dd)})`, body: brl(v) }); });
   });
+  contasDoMes(tm).filter(x => !x.paid && !x.fat).forEach(x => { const k = daysBetween(t, dstr(tm, Math.min(x.dia, 28)));
+    if (k >= 0 && k <= 1) out.push({ id: "pay:" + x.key + tm, tone: "due", title: `${x.n} vence ${k === 0 ? "hoje" : "amanhã"}`, body: brl(x.v) }); });
   return out;
 }
 function avisosHtml() {
   const l = notices(), can = "Notification" in window, on = can && Notification.permission === "granted" && ls.get("fluo.avisos") === "1";
   if (!l.length) return "";
   return `<div class="h"><h2>Avisos</h2>${on || !can ? "" : `<button class="aside" data-a="avisosOn">ativar no aparelho</button>`}</div>${l.map(n => `<div class="aviso ${n.tone}"><i></i><div><div class="t">${esc(n.title)}</div><div class="s">${esc(n.body)}</div></div></div>`).join("") || ``}`;
+}
+function localNotify(key, title, body) {
+  if (ls.get(key)) return; ls.set(key, "1"); toast(body ? title + ": " + body : title);
+  try { if ("Notification" in window && Notification.permission === "granted" && ls.get("fluo.avisos") === "1") new Notification(title, { body, tag: key }); } catch (e) {}
 }
 function pushNotices() {
   if (!("Notification" in window) || Notification.permission !== "granted" || ls.get("fluo.avisos") !== "1") return;
@@ -96,7 +102,7 @@ function shares(it) {
   const r = it.rach || [], v = it.v;
   if (!r.length) return { outros: [], meu: v };
   const fixed = r.filter(x => x.m === "fixo").reduce((t, x) => t + (+x.v || 0), 0), eq = r.filter(x => x.m !== "fixo").length, each = Math.max(0, v - fixed) / (eq + 1);
-  const outros = r.map(x => ({ p: x.p, v: Math.round((x.m === "fixo" ? +x.v || 0 : each) * 100) / 100 })), meu = Math.round((v - outros.reduce((t, x) => t + x.v, 0)) * 100) / 100;
+  const outros = r.map(x => ({ p: x.p, sid: x.sid, v: Math.round((x.m === "fixo" ? +x.v || 0 : each) * 100) / 100 })), meu = Math.round((v - outros.reduce((t, x) => t + x.v, 0)) * 100) / 100;
   return { outros, meu };
 }
 const recPend = id => S.pagos[cur]?.["rach:" + id] ? 0 : (calc(cur).recPor[id] || []).reduce((s, x) => s + x.v, 0);
@@ -109,7 +115,7 @@ function inboxIdx(s, k) {
 }
 function monthItems(k) {
   const out = [];
-  FR.inbox.forEach(s => { const n = inboxIdx(s, k); if (n > 0) out.push({ id: "in:" + s.sid, sid: s.sid, src: "amigo", tipo: "saida", d: s.d, v: s.v, cat: "__amigos", conta: "", dia: Math.min(28, s.dia || 10), idx: n, n: s.n || 1, from: s.handle }); });
+  FR.inbox.filter(s => !s.ack).forEach(s => { const n = inboxIdx(s, k); if (n > 0) out.push({ id: "in:" + s.sid, sid: s.sid, uid: s.uid, rec: s.rec || [], src: "amigo", tipo: "saida", d: s.d, v: s.v, cat: "__amigos", conta: "", dia: Math.min(28, s.dia || 10), idx: n, n: s.n || 1, from: s.handle }); });
   S.recorrentes.forEach(r => { if (diffM(r.inicio, k) >= 0 && (!r.fim || diffM(k, r.fim) >= 0)) out.push({ ...r, src: "rec", dia: r.dia || 1 }); });
   S.parcelas.forEach(p => { const i = diffM(startM(p), k); if (i >= 0 && i < p.n && (!p.fim || diffM(k, p.fim) >= 0)) out.push({ ...p, tipo: "saida", src: "parc", idx: i + 1, dia: +p.data.slice(8) }); });
   S.avulsos.forEach(a => { if ((a.fat || a.data.slice(0, 7)) === k) out.push({ ...a, src: "avulso", dia: +a.data.slice(8) }); });
@@ -117,7 +123,7 @@ function monthItems(k) {
   return out.sort((a, b) => b.dia - a.dia);
 }
 const isPaid = (k, it) => {
-  if (it.src === "amigo") return !!S.pagos[k]?.["amigo:" + it.sid];
+  if (it.src === "amigo") return !!S.pagos[k]?.["amigo:" + it.sid] || (it.rec || []).includes(k); // o amigo também pode ter marcado como recebido
   if (it.tipo !== "saida") return true;
   const c = conta(it.conta);
   if (c.tipo === "credito") return !!S.pagos[k]?.["card:" + c.id];
@@ -130,18 +136,37 @@ function calc(k) {
   const ent = sum(x => x.tipo === "entrada"), inv = sum(x => x.tipo === "invest"), sai = sumM(x => x.tipo === "saida");
   const fixo = sumM(x => x.tipo === "saida" && x.src === "rec"), parc = sumM(x => x.src === "parc"), vari = sumM(x => x.tipo === "saida" && (x.src === "avulso" || x.src === "amigo"));
   const porCat = {}, porConta = {}, recPor = {};
-  it.filter(x => x.tipo === "saida").forEach(x => { porCat[x.cat] = (porCat[x.cat] || 0) + x.meu; if (x.src !== "amigo") porConta[x.conta] = (porConta[x.conta] || 0) + x.v; x.outros.forEach(o => (recPor[o.p] ??= []).push({ it: x, v: o.v })); });
+  it.filter(x => x.tipo === "saida").forEach(x => { porCat[x.cat] = (porCat[x.cat] || 0) + x.meu; if (x.src !== "amigo") porConta[x.conta] = (porConta[x.conta] || 0) + x.v; x.outros.forEach(o => (recPor[o.p] ??= []).push({ it: x, v: o.v, sid: o.sid })); });
   const recebe = Object.values(recPor).flat().reduce((t, x) => t + x.v, 0), recPend = Object.entries(recPor).reduce((t, [id, l]) => t + (S.pagos[k]?.["rach:" + id] ? 0 : l.reduce((s, x) => s + x.v, 0)), 0);
   return { it, ent, inv, sai, fixo, parc, vari, saldo: ent - sai - inv, porCat, porConta, recPor, recebe, recPend };
 }
 function contasDoMes(k) {
   const c = calc(k), out = [];
-  S.contas.filter(a => a.tipo === "credito" || a.pessoa).forEach(a => { const v = c.porConta[a.id]; if (v) out.push({ key: "card:" + a.id, fat: a.id, n: a.pessoa ? pessoa(a.pessoa).n : "Fatura " + a.n, sub: a.pessoa ? "o que você usou do cartão dela" : "cartão de crédito", dia: cardVenc(a), v }); });
+  S.contas.filter(a => a.tipo === "credito" && !a.pessoa).forEach(a => { const v = c.porConta[a.id]; if (v) out.push({ key: "card:" + a.id, fat: a.id, n: "Fatura " + a.n, sub: "cartão de crédito", dia: cardVenc(a), v }); });
   c.it.filter(x => x.tipo === "saida" && x.src === "rec" && conta(x.conta).tipo !== "credito" && !conta(x.conta).pessoa).forEach(x => out.push({ key: x.id, n: x.d, sub: cat(x.cat).n + " · " + conta(x.conta).n, dia: x.dia, v: x.v }));
-  c.it.filter(x => x.src === "amigo").forEach(x => out.push({ key: "amigo:" + x.sid, n: x.d + (x.n > 1 ? ` ${x.idx}/${x.n}` : ""), sub: "você deve a @" + x.from, dia: x.dia, v: x.v }));
-  out.forEach(o => o.paid = !!S.pagos[k]?.[o.key]);
+  /* pessoas: uma linha só com a relação (o que você deve menos o que ela te deve) */
+  const used = new Set();
+  S.pessoas.forEach(p => {
+    const r = relacao(p, k); if (!r.oweT) return; r.am.forEach(x => used.add(x.sid));
+    const v = r.paid ? Math.max(0, r.oweT - r.recT) : r.oweOpen - r.recOpen; if (!r.paid && v <= 0.005) return;
+    out.push({ key: "pn:" + p.id, pessoa: p.id, paid: r.paid, n: p.n, v, dia: r.pc ? cardVenc(r.pc) : Math.min(...r.am.map(x => x.dia)),
+      sub: r.recT ? `você deve ${brl(r.oweT)} − ela te deve ${brl(r.recT)}` : r.cardV ? "o que você usou do cartão dela" : "você deve" });
+  });
+  c.it.filter(x => x.src === "amigo" && !used.has(x.sid)).forEach(x => out.push({ key: "amigo:" + x.sid, n: x.d + (x.n > 1 ? ` ${x.idx}/${x.n}` : ""), sub: "você deve a @" + x.from, dia: x.dia, v: x.v, src: x.src, id: x.id, paid: isPaid(k, x) }));
+  out.forEach(o => { if (o.paid === undefined) o.paid = !!S.pagos[k]?.[o.key]; });
   return out.sort((a, b) => a.paid - b.paid || a.dia - b.dia);
 }
+/* relação mês a mês com uma pessoa: o que você deve (cartão dela + divisões que ela te mandou) menos o que ela te deve (divisões suas) */
+const ackMonths = sid => FR.inbox.filter(s => s.ack && s.of === sid).flatMap(s => s.meses || []);
+function relacao(p, k) {
+  const c = calc(k), pg = S.pagos[k] || {}, pc = S.contas.find(a => a.pessoa === p.id), cardV = pc ? c.porConta[pc.id] || 0 : 0;
+  const am = p.amigo ? c.it.filter(x => x.src === "amigo" && x.from === p.amigo.handle) : [], rl = c.recPor[p.id] || [], recT = rl.reduce((t, x) => t + x.v, 0);
+  const keys = [...(cardV ? ["card:" + pc.id] : []), ...am.map(x => "amigo:" + x.sid), ...(recT ? ["rach:" + p.id] : [])];
+  const oweT = cardV + am.reduce((t, x) => t + x.v, 0), oweOpen = (cardV && !pg["card:" + pc.id] ? cardV : 0) + am.filter(x => !isPaid(k, x)).reduce((t, x) => t + x.v, 0), recOpen = pg["rach:" + p.id] ? 0 : recT;
+  const said = recOpen > 0 && rl.every(x => x.sid && ackMonths(x.sid).includes(k)); // o app dela marcou como pago
+  return { p, pc, cardV, am, rl, recT, oweT, oweOpen, recOpen, net: oweOpen - recOpen, said, keys, paid: keys.length > 0 && oweOpen === 0 && recOpen === 0 };
+}
+function setRel(r, st) { (S.pagos[cur] ??= {}); r.keys.forEach(k => { S.pagos[cur][k] = st; }); }
 const restante = d => d.v - (d.pagtos || []).reduce((t, p) => t + p.v, 0);
 const autoDebt = p => { const pc = S.contas.find(c => c.pessoa === p.id); if (!pc) return 0; const v = calc(cur).porConta[pc.id] || 0; return S.pagos[cur]?.["card:" + pc.id] ? 0 : v; };
 
@@ -169,7 +194,7 @@ function closeSheet() {
 }
 /* formulário genérico: FS guarda o estado, #fb é redesenhado a cada escolha */
 function form(title, st, body, { pre = "", sub = "" } = {}) {
-  FS = st; FS.draw = () => { const b = $("#fb"); if (b) b.innerHTML = body(FS); };
+  FS = st; FS.draw = () => { const b = $("#fb"); if (!b) return; const p = b.closest(".panel"), y = p ? p.scrollTop : 0; b.innerHTML = body(FS); if (p) p.scrollTop = y; };
   openSheet(`<h3>${title}</h3>${sub ? `<p class="lede">${sub}</p>` : ""}${pre}<div id="fb">${body(FS)}</div>`);
 }
 const chips = (f, opts, val) => `<div class="chips">${opts.map(o => `<button type="button" class="chip" data-a="set" data-f="${f}" data-val="${esc(o.v)}" aria-pressed="${String(val) === String(o.v)}">${o.c ? `<i style="--c:${o.c}"></i>` : ""}${esc(o.l)}</button>`).join("")}</div>`;
@@ -205,26 +230,30 @@ function pgInicio() {
   const tl = ks.map((k, i) => `<button data-a="go" data-k="${k}" aria-current="${k === cur}"><div class="col"><i style="height:${Math.max(3, (cs[i].sai + cs[i].inv) / mx * 100)}%"></i><u style="bottom:${cs[i].ent / mx * 100}%"></u></div><b class="num money">${brl0(cs[i].saldo)}</b><small>${short(k)}</small></button>`).join("");
   /* categorias e formas de pagamento */
   const topCat = Object.entries(c.porCat).sort((a, b) => b[1] - a[1]).slice(0, 7);
-  const bars = (arr, colorOf, nameOf, total) => arr.map(([id, v], i) => `<div class="ln"><span>${esc(nameOf(id))}</span><span class="v">${M(v)}</span><div class="track"><i style="width:${v / total * 100}%;background:${colorOf(id)};animation-delay:${i * 50}ms"></i></div></div>`).join("");
+  const bars = (arr, colorOf, nameOf, total, act) => arr.map(([id, v], i) => `<div class="ln" data-a="${act}" data-id="${esc(id)}" role="button" tabindex="0" style="cursor:pointer"><span>${esc(nameOf(id))}</span><span class="v">${M(v)}</span><div class="track"><i style="width:${v / total * 100}%;background:${colorOf(id)};animation-delay:${i * 50}ms"></i></div></div>`).join("");
   const porConta = Object.entries(c.porConta).sort((a, b) => b[1] - a[1]);
   /* horizonte: quando as parcelas diminuem */
   let hor = "";
   for (let i = 1; i <= 14; i++) { const a = calc(addM(cur, i - 1)).parc, b = calc(addM(cur, i)).parc; if (b < a - 0.5) { hor = `Em <b>${label(addM(cur, i))}</b> suas parcelas caem de ${M(a)} para ${M(b)} — <span class="hl">${brl(a - b)} a menos por mês</span>.`; break; } }
   const rows = l.filter(x => !x.paid).slice(0, 5).map(payRow).join("");
   return `<section class="hero"><div><div class="kick">Saldo de ${label(cur)}</div><div class="big money num"><small>R$</small>${!PRIV && c.saldo < 0 ? "−" : ""}${nbr(c.saldo)}</div><p class="sent">${frase}</p></div>
-    <div class="facts"><div class="fact"><span>Entrou</span><b class="pos">${M(c.ent)}</b></div><div class="fact"><span>Saiu</span><b>${M(c.sai)}</b></div><div class="fact"><span>Investiu</span><b>${M(c.inv)}</b></div><div class="fact"><span>Falta pagar</span><b>${M(falta)}</b></div>${c.recPend > 0 ? `<div class="fact"><span>A receber</span><b class="pos">${M(c.recPend)}</b></div>` : ""}</div></section>
-   ${avisosHtml()}<div class="river">${seg_.map(([n, v, col], i) => `<i title="${n}" style="width:${v / base * 100}%;background:${col};animation-delay:${i * 70}ms"></i>`).join("")}</div>
+    <div class="facts"><div class="fact" data-a="verext" data-v="entrada" role="button" tabindex="0" style="cursor:pointer"><span>Entrou</span><b class="pos">${M(c.ent)}</b></div><div class="fact" data-a="verext" data-v="saida" role="button" tabindex="0" style="cursor:pointer"><span>Saiu</span><b>${M(c.sai)}</b></div><div class="fact" data-a="verext" data-v="invest" role="button" tabindex="0" style="cursor:pointer"><span>Investiu</span><b>${M(c.inv)}</b></div><div class="fact" data-a="verext" data-v="aberto" role="button" tabindex="0" style="cursor:pointer"><span>Falta pagar</span><b>${M(falta)}</b></div>${c.recPend > 0 ? `<div class="fact"><span>A receber</span><b class="pos">${M(c.recPend)}</b></div>` : ""}</div></section>
+   ${avisosHtml()}${receberHtml()}<div class="river">${seg_.map(([n, v, col], i) => `<i title="${n}" style="width:${v / base * 100}%;background:${col};animation-delay:${i * 70}ms"></i>`).join("")}</div>
    <div class="legend">${seg_.map(([n, v, col]) => `<span style="--c:${col}">${n} <b class="money">${brl0(v)}</b></span>`).join("")}</div>
    <div class="h"><h2>Linha do tempo</h2></div><div class="tl">${tl}</div>
    <div class="cols"><div><div class="h"><h2>Próximos vencimentos</h2><button class="aside" data-a="nav" data-p="pagar">ver todos →</button></div>${rows || `<p class="empty">Nada pendente.</p>`}</div>
-    <div><div class="h"><h2>Para onde foi</h2></div><div class="bars">${bars(topCat, id => cat(id).cor, id => cat(id).n, c.sai) || `<p class="empty">Sem saídas.</p>`}</div></div></div>
-   <div class="cols"><div><div class="h"><h2>Por forma de pagamento</h2></div><div class="bars">${bars(porConta, id => conta(id).cor, id => conta(id).n, Object.values(c.porConta).reduce((t, v) => t + v, 0)) || `<p class="empty">Sem saídas.</p>`}</div></div>
+    <div><div class="h"><h2>Para onde foi</h2></div><div class="bars">${bars(topCat, id => cat(id).cor, id => cat(id).n, c.sai, "catv") || `<p class="empty">Sem saídas.</p>`}</div></div></div>
+   <div class="cols"><div><div class="h"><h2>Por forma de pagamento</h2></div><div class="bars">${bars(porConta, id => conta(id).cor, id => conta(id).n, Object.values(c.porConta).reduce((t, v) => t + v, 0), "conta") || `<p class="empty">Sem saídas.</p>`}</div></div>
     <div><div class="h"><h2>No horizonte</h2></div><p class="sent">${hor || "—"}</p></div></div>`;
+}
+function receberHtml() {
+  const amt = r => r.said ? Math.max(0, r.recT - r.oweT) : r.recOpen - r.oweOpen, l = S.pessoas.map(p => relacao(p, cur)).filter(r => r.said || r.recOpen - r.oweOpen > 0.005); if (!l.length) return "";
+  return `<div class="h"><h2>Quem ainda não te pagou</h2><span class="aside">${M(l.reduce((t, r) => t + amt(r), 0))}</span></div>` + l.map(r => `<div class="ln" style="grid-template-columns:minmax(0,1fr) auto"><div data-a="pessoa" data-id="${r.p.id}" style="min-width:0;cursor:pointer"><div class="t">${esc(r.p.n)}${r.said ? '<span class="tag">disse que pagou</span>' : ""}</div><div class="s">${r.oweT ? `te deve ${brl(r.recT)}, menos ${brl(r.oweT)} que você deve a ela` : "ainda não pagou"}</div></div><span class="v">${M(amt(r))}</span>${r.said ? `<div style="grid-column:1/-1"><button class="chip" data-a="recebido" data-id="${r.p.id}">Confirmar que recebi</button></div>` : ""}</div>`).join("");
 }
 function payRow(x) {
   const hoje = new Date().getDate(), late = !x.paid && (diffM(cur, NOW) < 0 || cur === NOW && x.dia < hoje);
   return `<div class="ln pay ${x.paid ? "paid" : ""}"><button class="ck" data-a="pay" data-k="${esc(x.key)}" aria-pressed="${x.paid}" aria-label="${x.paid ? "Pago, reabrir" : "Marcar como pago"}">✓</button><span class="d">dia ${x.dia}</span>
-    <div ${x.fat ? `data-a="conta" data-id="${x.fat}" style="cursor:pointer"` : ""} style="min-width:0"><div class="t">${esc(x.n)}${late ? '<span class="tag late">atrasada</span>' : ""}</div><div class="s">${esc(x.sub)}</div></div><span class="v">${M(x.v)}</span></div>`;
+    <div ${x.fat ? `data-a="conta" data-id="${x.fat}"` : x.pessoa ? `data-a="pessoa" data-id="${x.pessoa}"` : `data-a="view" data-src="${x.src}" data-id="${esc(x.id)}"`} style="min-width:0;cursor:pointer"><div class="t">${esc(x.n)}${late ? '<span class="tag late">atrasada</span>' : ""}</div><div class="s">${esc(x.sub)}</div></div><span class="v">${M(x.v)}</span></div>`;
 }
 
 /* ---------- Pagar ---------- */
@@ -242,16 +271,16 @@ function pgPagar() {
 /* ---------- Extrato ---------- */
 function pgExtrato() {
   const c = calc(cur);
-  let it = c.it.filter(x => filtro === "tudo" || filtro === "entrada" && x.tipo !== "saida" || filtro === "saida" && x.tipo === "saida" || filtro === "aberto" && x.tipo === "saida" && !isPaid(cur, x));
+  let it = c.it.filter(x => filtro === "tudo" || filtro === "entrada" && x.tipo === "entrada" || filtro === "invest" && x.tipo === "invest" || filtro === "saida" && x.tipo === "saida" || filtro === "aberto" && x.tipo === "saida" && !isPaid(cur, x));
   if (busca) it = it.filter(x => norm(x.d + " " + cat(x.cat).n + " " + conta(x.conta).n).includes(norm(busca)));
   const gk = agrupar === "conta" ? x => x.conta : agrupar === "cat" ? x => x.cat : x => x.dia;
   const gl = agrupar === "conta" ? k => conta(k).n : agrupar === "cat" ? k => cat(k).n : k => "Dia " + k;
   const grp = {}; it.forEach(x => (grp[gk(x)] ??= []).push(x));
   const keys = Object.keys(grp).sort(agrupar === "dia" ? (a, b) => b - a : (a, b) => grp[b].reduce((t, x) => t + x.v, 0) - grp[a].reduce((t, x) => t + x.v, 0));
-  const line = x => `<button class="ln" data-a="edit" data-src="${x.src}" data-id="${x.id}"><span class="d">${agrupar === "dia" ? "" : "dia " + x.dia}</span><span style="min-width:0"><span class="t" style="display:block">${esc(x.d)}${x.ev && evento(x.ev) ? `<span class="tag ev">${esc(evento(x.ev).n)}</span>` : ""}${x.rach?.length ? `<span class="tag">dividido</span>` : ""}${x.src === "amigo" ? `<span class="tag">@${esc(x.from)}</span>` : ""}</span><span class="s" style="display:block">${esc(cat(x.cat).n)} · ${x.src === "amigo" ? "você deve" : esc(conta(x.conta).n)}${x.src === "parc" || x.src === "amigo" && x.n > 1 ? ` · ${x.idx}/${x.n}` : x.src === "rec" ? " · todo mês" : ""}</span></span><span class="v ${x.tipo === "entrada" ? "pos" : ""}">${x.tipo === "entrada" ? "+" : ""}${M(x.v)}</span></button>`;
+  const line = x => `<button class="ln" data-a="view" data-src="${x.src}" data-id="${x.id}"><span class="d">${agrupar === "dia" ? "" : "dia " + x.dia}</span><span style="min-width:0"><span class="t" style="display:block">${esc(x.d)}${x.ev && evento(x.ev) ? `<span class="tag ev">${esc(evento(x.ev).n)}</span>` : ""}${x.rach?.length ? `<span class="tag">dividido</span>` : ""}${x.src === "amigo" ? `<span class="tag">@${esc(x.from)}</span>` : ""}</span><span class="s" style="display:block">${esc(cat(x.cat).n)} · ${x.src === "amigo" ? "você deve" : esc(conta(x.conta).n)}${x.src === "parc" || x.src === "amigo" && x.n > 1 ? ` · ${x.idx}/${x.n}` : x.src === "rec" ? " · todo mês" : ""}</span></span><span class="v ${x.tipo === "entrada" ? "pos" : ""}">${x.tipo === "entrada" ? "+" : ""}${M(x.v)}</span></button>`;
   const totEnt = it.filter(x => x.tipo === "entrada").reduce((t, x) => t + x.v, 0), totSai = it.filter(x => x.tipo === "saida").reduce((t, x) => t + x.v, 0);
   return `<div class="tools"><input class="search" id="busca" type="search" placeholder="Buscar nome, categoria ou cartão" value="${esc(busca)}" aria-label="Buscar">
-     <div class="seg">${[["tudo", "Tudo"], ["saida", "Saídas"], ["entrada", "Entradas"], ["aberto", "A pagar"]].map(([k, t]) => `<button data-a="filtro" data-v="${k}" aria-pressed="${filtro === k}">${t}</button>`).join("")}</div>
+     <div class="seg">${[["tudo", "Tudo"], ["saida", "Saídas"], ["entrada", "Entradas"], ["invest", "Investido"], ["aberto", "A pagar"]].map(([k, t]) => `<button data-a="filtro" data-v="${k}" aria-pressed="${filtro === k}">${t}</button>`).join("")}</div>
      <div class="seg">${[["dia", "Dia"], ["conta", "Pagamento"], ["cat", "Categoria"]].map(([k, t]) => `<button data-a="agrupar" data-v="${k}" aria-pressed="${agrupar === k}">${t}</button>`).join("")}</div></div>
    ${keys.map(k => `<div class="h"><h2>${esc(gl(k))}</h2><span class="aside">${M(grp[k].reduce((t, x) => t + (x.tipo === "entrada" ? x.v : -x.v), 0))}</span></div>${grp[k].map(line).join("")}`).join("") || `<p class="empty">Nada neste mês.</p>`}
    <div class="sub-total"><span>${it.length} lançamentos</span><span class="num">entrou ${M(totEnt)} · saiu ${M(totSai)}</span></div>`;
@@ -273,12 +302,34 @@ function cicloHtml(a) {
   const t = today(), c = cardCycle(a, t), next = dstr(+t.slice(8) <= c.fecha ? t.slice(0, 7) : addM(t.slice(0, 7), 1), c.fecha), n = daysBetween(t, next);
   return `<div class="preview">Fecha dia ${c.fecha}${c.estimado ? " (estimado)" : ""} · vence dia ${c.venc}<br>Melhor dia de compra: <b>${n === 0 ? "hoje" : fd(next) + " (em " + n + " dias)"}</b></div>`;
 }
+function itemSheet(src, id) {
+  const x = calc(cur).it.find(i => i.src === src && i.id === id) || monthItems(cur).find(i => i.src === src && i.id === id);
+  const raw = { rec: S.recorrentes, parc: S.parcelas, avulso: S.avulsos }[src]?.find(i => i.id === id), it = x || (raw && { ...raw, src, dia: raw.dia || +String(raw.data || "").slice(8) || 1 });
+  if (!it) return;
+  const isS = it.tipo === "saida", cc = it.conta ? conta(it.conta) : null;
+  const row = (l, v) => v ? `<div class="ln" style="grid-template-columns:minmax(0,1fr) auto"><span class="s">${l}</span><span class="t" style="text-align:right">${v}</span></div>` : "";
+  const quando = src === "rec" ? `Todo mês, dia ${it.dia}` : src === "parc" ? `Parcela ${it.idx || "—"} de ${it.n}` : src === "amigo" ? (it.n > 1 ? `Parcela ${it.idx} de ${it.n}` : "Uma vez") : fdate(it.data);
+  const extra = src === "rec" ? row("Desde", label(it.inicio)) + (it.fim ? row("Até", label(it.fim)) : "")
+    : src === "parc" ? row("Total", brl(it.v * it.n)) + row("Primeira fatura", label(startM(it))) + row("Última parcela", label(addM(startM(it), it.n - 1))) + row("Compra", fdate(it.data)) + (it.fim ? row("Quitada em", label(it.fim)) : "")
+    : "";
+  const div = it.rach?.length ? row("Dividido com", it.rach.map(r => esc(pessoa(r.p)?.n || "?")).join(", ")) + row("Sua parte", M(it.meu ?? it.v)) : "";
+  const paid = isS && isPaid(cur, it);
+  openSheet(`<div class="kick">${{ entrada: "Entrada", invest: "Investimento", saida: "Saída" }[it.tipo] || ""} · ${label(cur)}</div><h3>${esc(it.d)}</h3><div class="big money num" style="font-size:52px;margin:14px 0">${brl(it.v)}</div>
+    ${isS ? `<p class="note">${paid ? "Pago ✓" : "Ainda não pago"}</p>` : ""}
+    ${row("Categoria", it.cat && it.cat !== "__amigos" ? esc(cat(it.cat).n) : it.cat ? "Divisões com amigos" : "")}${src === "amigo" ? row("Você deve a", "@" + esc(it.from)) : row(isS ? "Pago com" : "Conta", cc ? esc(cc.n) : "")}${row("Quando", quando)}${extra}${row("Evento", it.ev && evento(it.ev) ? esc(evento(it.ev).n) : "")}${div}
+    ${src !== "amigo" ? `<div class="acts"><button class="secondary" data-a="edit" data-src="${src}" data-id="${esc(id)}">Editar</button></div>` : ""}`, true);
+}
+function catSheet(id) {
+  const c = calc(cur), its = c.it.filter(x => x.cat === id && x.tipo === "saida").sort((a, b) => b.v - a.v), tot = its.reduce((t, x) => t + x.v, 0);
+  openSheet(`<div class="kick">${label(cur)}</div><h3>${esc(cat(id).n)}</h3><div class="big money num" style="font-size:52px;margin:14px 0">${brl(tot)}</div>
+    <div class="h"><h2>${its.length} lançamentos</h2></div>${its.map(x => `<button class="ln" data-a="view" data-src="${x.src}" data-id="${x.id}"><span class="d">dia ${x.dia}</span><span class="t" style="min-width:0">${esc(x.d)}${x.src === "parc" ? ` <span class="mute">${x.idx}/${x.n}</span>` : ""}<span class="s" style="display:block">${esc(conta(x.conta).n)}</span></span><span class="v">${M(x.v)}</span></button>`).join("") || `<p class="empty">Nada neste mês.</p>`}`, true);
+}
 function contaSheet(id) {
   const a = conta(id), c = calc(cur), its = c.it.filter(x => x.conta === id && x.tipo === "saida"), tot = c.porConta[id] || 0, paid = !!S.pagos[cur]?.["card:" + id];
   openSheet(`<div class="kick">${a.tipo === "credito" ? "Fatura de " + label(cur) : label(cur)}</div><h3>${esc(a.pessoa ? pessoa(a.pessoa).n : a.n)}</h3><div class="big money num" style="font-size:52px;margin:14px 0">${brl(tot)}</div>
     ${a.tipo === "credito" && !a.pessoa ? cicloHtml(a) : ""}${a.limite ? `<p class="note">Limite ${brl0(a.limite)} · ${Math.round(tot / a.limite * 100)}% usado</p>` : ""}
     ${a.tipo === "credito" && tot ? `<div class="acts"><button class="${paid ? "secondary" : "primary"}" data-a="pay" data-k="card:${id}" data-keep="1">${paid ? "Fatura paga · reabrir" : "Marcar fatura como paga"}</button></div>` : ""}
-    <div class="h"><h2>${its.length} lançamentos</h2></div>${its.map(x => `<button class="ln" data-a="edit" data-src="${x.src}" data-id="${x.id}"><span class="d">dia ${x.dia}</span><span class="t" style="min-width:0">${esc(x.d)}${x.src === "parc" ? ` <span class="mute">${x.idx}/${x.n}</span>` : ""}</span><span class="v">${M(x.v)}</span></button>`).join("") || `<p class="empty">Nada neste mês.</p>`}
+    <div class="h"><h2>${its.length} lançamentos</h2></div>${its.map(x => `<button class="ln" data-a="view" data-src="${x.src}" data-id="${x.id}"><span class="d">dia ${x.dia}</span><span class="t" style="min-width:0">${esc(x.d)}${x.src === "parc" ? ` <span class="mute">${x.idx}/${x.n}</span>` : ""}</span><span class="v">${M(x.v)}</span></button>`).join("") || `<p class="empty">Nada neste mês.</p>`}
     <div class="acts"><button class="secondary" data-a="editConta" data-id="${id}">Editar</button></div>`, true);
 }
 
@@ -286,6 +337,8 @@ function contaSheet(id) {
 function pessoaSheet(id) {
   const p = pessoa(id), pc = S.contas.find(c => c.pessoa === id), au = autoDebt(p), pago = !!S.pagos[cur]?.["card:" + pc?.id], dv = S.dividas.filter(d => d.pessoa === id);
   openSheet(`<h3>${esc(p.n)}</h3>${p.amigo ? `<p class="lede">@${esc(p.amigo.handle)} · amigo</p>` : ""}
+   ${(() => { const r = relacao(p, cur); if (!r.keys.length) return ""; const t = r.oweT - r.recT, row = (l, v, c = "") => `<div class="ln" style="grid-template-columns:minmax(0,1fr) auto"><span class="s">${l}</span><span class="v ${c}">${v}</span></div>`;
+     return `<div class="h"><h2>Relação de ${label(cur)}</h2></div>${r.oweT ? row("Você deve", M(r.oweT)) : ""}${r.recT ? row("Ela te deve", "− " + M(r.recT), "pos") : ""}${row(`<b>${t > 0.005 ? "Você paga" : t < -0.005 ? "Ela te paga" : "Quites"}</b>`, `<b>${M(Math.abs(t))}</b>`)}${r.said ? `<p class="note">O app dela marcou como pago.</p>` : ""}<div class="acts" style="margin-top:12px"><button class="${r.paid ? "secondary" : "primary"}" data-a="pay" data-k="pn:${id}">${r.paid ? "Pago · reabrir" : t < -0.005 ? "Marcar como recebido" : "Marcar como pago"}</button></div>`; })()}
    ${pc ? `<div class="h"><h2>Cartão dela em ${label(cur)}</h2><span class="aside">${M(calc(cur).porConta[pc.id] || 0)}</span></div><button class="${pago ? "secondary" : "primary"}" data-a="pay" data-k="card:${pc.id}" data-keep="1">${pago ? "Pago · reabrir" : "Marcar como pago"}</button>` : ""}
    ${(() => { const rl = calc(cur).recPor[id] || [], rt = rl.reduce((s, x) => s + x.v, 0), got = !!S.pagos[cur]?.["rach:" + id]; return rl.length ? `<div class="h"><h2>Divisão de ${label(cur)}</h2><span class="aside">${M(rt)}</span></div>${rl.map(x => `<div class="ln" style="grid-template-columns:minmax(0,1fr) auto"><span class="t" style="min-width:0">${esc(x.it.d)}${x.it.src === "parc" ? ` <span class="mute">${x.it.idx}/${x.it.n}</span>` : ""}</span><span class="v">${M(x.v)}</span></div>`).join("")}<div class="acts" style="margin-top:12px"><button class="${got ? "secondary" : "primary"}" data-a="recebido" data-id="${id}">${got ? "Recebido · reabrir" : "Marcar como recebido"}</button></div>` : ""; })()}
    <div class="h"><h2>Dívidas</h2></div>
@@ -329,12 +382,12 @@ function pgPlano() {
     const ring = (i, n) => { const f = Math.max(0, Math.min(1, i / n)), r = 17, C = 2 * Math.PI * r; return `<svg class="ring" viewBox="0 0 42 42"><circle cx="21" cy="21" r="${r}" fill="none" stroke="var(--line)" stroke-width="4"/><circle cx="21" cy="21" r="${r}" fill="none" stroke="var(--ink)" stroke-width="4" stroke-dasharray="${C}" stroke-dashoffset="${C * (1 - f)}" transform="rotate(-90 21 21)" stroke-linecap="round"/><text x="21" y="25" text-anchor="middle" font-size="11" font-weight="700" fill="currentColor">${Math.max(0, Math.min(p_n(i, n), n))}</text></svg>`; };
     const p_n = (i) => i;
     const act = ps.filter(x => !x.done);
-    const line = x => `<button class="ln parc" data-a="edit" data-src="parc" data-id="${x.p.id}" style="${x.done ? "opacity:.55" : ""}">${ring(Math.min(x.i, x.p.n), x.p.n)}<span style="min-width:0"><span class="t" style="display:block">${esc(x.p.d)}${x.done ? '<span class="tag">quitada</span>' : x.fut ? '<span class="tag">começa em ' + short(x.p.data.slice(0, 7)) + "</span>" : ""}</span><span class="s" style="display:block">${esc(conta(x.p.conta).n)} · ${x.done ? "terminou" : "termina"} em ${short(x.end)}${!x.done && x.left ? ` · faltam ${x.left}` : ""}</span></span><span class="v">${M(x.p.v)}<span class="s" style="display:block;font:400 12px var(--sans)">${x.p.n}x</span></span></button>`;
+    const line = x => `<button class="ln parc" data-a="view" data-src="parc" data-id="${x.p.id}" style="${x.done ? "opacity:.55" : ""}">${ring(Math.min(x.i, x.p.n), x.p.n)}<span style="min-width:0"><span class="t" style="display:block">${esc(x.p.d)}${x.done ? '<span class="tag">quitada</span>' : x.fut ? '<span class="tag">começa em ' + short(x.p.data.slice(0, 7)) + "</span>" : ""}</span><span class="s" style="display:block">${esc(conta(x.p.conta).n)} · ${x.done ? "terminou" : "termina"} em ${short(x.end)}${!x.done && x.left ? ` · faltam ${x.left}` : ""}</span></span><span class="v">${M(x.p.v)}<span class="s" style="display:block;font:400 12px var(--sans)">${x.p.n}x</span></span></button>`;
     return tabs + `<p class="lede">${act.length} parcelas ativas somam <b class="money">${brl(act.filter(x => !x.fut).reduce((t, x) => t + x.p.v, 0))}</b> em ${label(cur)}.</p><div class="h"><h2>Em andamento</h2></div>${act.map(line).join("") || `<p class="empty">Nenhuma.</p>`}${ps.some(x => x.done) ? `<div class="h"><h2>Encerradas</h2></div>${ps.filter(x => x.done).map(line).join("")}` : ""}`;
   }
   if (plano === "rec") {
     const rs = S.recorrentes.map(r => ({ r, on: diffM(r.inicio, cur) >= 0 && (!r.fim || diffM(cur, r.fim) >= 0), end: r.fim && diffM(cur, r.fim) < 0 })).sort((a, b) => b.on - a.on || a.r.tipo.localeCompare(b.r.tipo) || b.r.v - a.r.v);
-    return tabs + `` + ["entrada", "invest", "saida"].map(t => { const l = rs.filter(x => x.r.tipo === t); return l.length ? `<div class="h"><h2>${{ entrada: "Entradas", invest: "Investimentos", saida: "Saídas fixas" }[t]}</h2><span class="aside">${M(l.filter(x => x.on).reduce((s, x) => s + x.r.v, 0))}</span></div>${l.map(x => `<button class="ln" data-a="edit" data-src="rec" data-id="${x.r.id}" style="${x.on ? "" : "opacity:.5"}"><span class="d">dia ${x.r.dia || 1}</span><span style="min-width:0"><span class="t" style="display:block">${esc(x.r.d)}${!x.on ? `<span class="tag">${x.end ? "encerrado" : "começa " + short(x.r.inicio)}</span>` : ""}</span><span class="s" style="display:block">${esc(cat(x.r.cat).n)} · ${esc(conta(x.r.conta).n)} · desde ${short(x.r.inicio)}</span></span><span class="v">${M(x.r.v)}</span></button>`).join("")}` : ""; }).join("");
+    return tabs + `` + ["entrada", "invest", "saida"].map(t => { const l = rs.filter(x => x.r.tipo === t); return l.length ? `<div class="h"><h2>${{ entrada: "Entradas", invest: "Investimentos", saida: "Saídas fixas" }[t]}</h2><span class="aside">${M(l.filter(x => x.on).reduce((s, x) => s + x.r.v, 0))}</span></div>${l.map(x => `<button class="ln" data-a="view" data-src="rec" data-id="${x.r.id}" style="${x.on ? "" : "opacity:.5"}"><span class="d">dia ${x.r.dia || 1}</span><span style="min-width:0"><span class="t" style="display:block">${esc(x.r.d)}${!x.on ? `<span class="tag">${x.end ? "encerrado" : "começa " + short(x.r.inicio)}</span>` : ""}</span><span class="s" style="display:block">${esc(cat(x.r.cat).n)} · ${esc(conta(x.r.conta).n)} · desde ${short(x.r.inicio)}</span></span><span class="v">${M(x.r.v)}</span></button>`).join("")}` : ""; }).join("");
   }
   if (plano === "div") return tabs + divHtml();
   const evs = (S.eventos || []).map(e => ({ e, s: evStats(e.id) }));
@@ -343,11 +396,11 @@ function pgPlano() {
 }
 function divHtml() {
   const c = calc(cur), ids = Object.keys(c.recPor), dv = c.it.filter(x => x.src === "amigo");
-  const devoHtml = dv.length ? `<div class="h"><h2>Você deve</h2><span class="aside">${M(dv.reduce((t, x) => t + x.v, 0))}</span></div>` + dv.map(x => payRow({ key: "amigo:" + x.sid, n: x.d + (x.n > 1 ? ` ${x.idx}/${x.n}` : ""), sub: "@" + x.from, dia: x.dia, v: x.v, paid: !!S.pagos[cur]?.["amigo:" + x.sid] })).join("") : "";
+  const devoHtml = dv.length ? `<div class="h"><h2>Você deve</h2><span class="aside">${M(dv.reduce((t, x) => t + x.v, 0))}</span></div>` + dv.map(x => payRow({ key: "amigo:" + x.sid, n: x.d + (x.n > 1 ? ` ${x.idx}/${x.n}` : ""), sub: "@" + x.from, dia: x.dia, v: x.v, paid: isPaid(cur, x) })).join("") : "";
   if (!ids.length) return devoHtml || `<p class="empty">Nenhuma divisão em ${label(cur)}.</p>`;
   return `<p class="lede">A receber em ${label(cur)}: <b class="money">${brl(c.recebe)}</b></p>` + ids.map(id => {
     const p = pessoa(id), l = c.recPor[id], t = l.reduce((s, x) => s + x.v, 0), got = !!S.pagos[cur]?.["rach:" + id];
-    return `<div class="h"><h2>${esc(p.n)}</h2><span class="aside">${M(t)}</span></div>${l.map(x => `<button class="ln" data-a="edit" data-src="${x.it.src}" data-id="${x.it.id}" style="grid-template-columns:minmax(0,1fr) auto"><span class="t" style="min-width:0">${esc(x.it.d)}${x.it.src === "parc" ? ` <span class="mute">${x.it.idx}/${x.it.n}</span>` : ""}</span><span class="v">${M(x.v)}</span></button>`).join("")}<div class="acts" style="margin-top:12px"><button class="${got ? "secondary" : "primary"}" data-a="recebido" data-id="${id}">${got ? "Recebido · reabrir" : "Marcar como recebido"}</button></div>`;
+    return `<div class="h"><h2>${esc(p.n)}</h2><span class="aside">${M(t)}</span></div>${l.map(x => `<button class="ln" data-a="view" data-src="${x.it.src}" data-id="${x.it.id}" style="grid-template-columns:minmax(0,1fr) auto"><span class="t" style="min-width:0">${esc(x.it.d)}${x.it.src === "parc" ? ` <span class="mute">${x.it.idx}/${x.it.n}</span>` : ""}</span><span class="v">${M(x.v)}</span></button>`).join("")}<div class="acts" style="margin-top:12px"><button class="${got ? "secondary" : "primary"}" data-a="recebido" data-id="${id}">${got ? "Recebido · reabrir" : "Marcar como recebido"}</button></div>`;
   }).join("") + devoHtml;
 }
 function evStats(id) {
@@ -362,7 +415,7 @@ function eventoSheet(id) {
   const e = evento(id), s = evStats(id), its = [...S.avulsos.filter(a => a.ev === id).map(a => ({ ...a, src: "avulso" })), ...S.parcelas.filter(p => p.ev === id).map(p => ({ ...p, src: "parc", tipo: "saida" })), ...S.recorrentes.filter(r => r.ev === id).map(r => ({ ...r, src: "rec" }))];
   openSheet(`<div class="kick">Evento</div><h3>${esc(e.n)}</h3><div class="big money num" style="font-size:52px;margin:14px 0">${brl(s.gasto - s.ent)}</div><p class="note">custo líquido · gasto ${brl(s.gasto)}${s.ent ? ` − entradas ${brl(s.ent)}` : ""}${e.orc ? ` · orçamento ${brl0(e.orc)} (${s.gasto > e.orc ? "estourou " + brl0(s.gasto - e.orc) : "sobram " + brl0(e.orc - s.gasto)})` : ""}</p>
    <div class="h"><h2>Mês a mês</h2></div>${Object.entries(s.meses).sort().map(([k, v]) => `<div class="ln" style="grid-template-columns:1fr auto"><span>${label(k)}</span><span class="v">${M(v)}</span></div>`).join("") || `<p class="empty">Sem gastos.</p>`}
-   <div class="h"><h2>Lançamentos</h2></div>${its.map(x => `<button class="ln" data-a="edit" data-src="${x.src}" data-id="${x.id}" style="grid-template-columns:minmax(0,1fr) auto"><span class="t">${esc(x.d)}${x.src === "parc" ? ` <span class="mute">${x.n}x</span>` : ""}${x.src === "rec" ? ' <span class="mute">todo mês</span>' : ""}</span><span class="v">${M(x.v)}</span></button>`).join("")}
+   <div class="h"><h2>Lançamentos</h2></div>${its.map(x => `<button class="ln" data-a="view" data-src="${x.src}" data-id="${x.id}" style="grid-template-columns:minmax(0,1fr) auto"><span class="t">${esc(x.d)}${x.src === "parc" ? ` <span class="mute">${x.n}x</span>` : ""}${x.src === "rec" ? ' <span class="mute">todo mês</span>' : ""}</span><span class="v">${M(x.v)}</span></button>`).join("")}
    <div class="acts"><button class="secondary" data-a="editEvento" data-id="${id}">Editar evento</button></div>`);
 }
 function eventoForm(id) {
@@ -500,7 +553,7 @@ function lancar(it, src) {
      ${edit && isParc && !it.fim ? `<p class="note"><button class="danger" data-a="stop" style="padding:0">Quitar adiantado (último mês pago: ${label(cur)})</button></p>` : ""}`;
   };
   form(edit ? "Editar lançamento" : "Novo lançamento", F, body, { pre: edit ? "" : `<input class="smart" id="smart" data-f="smart" placeholder="Escreva: mercado 85 nubank ontem · tablet 12x 80" autofocus autocomplete="off">` });
-  FS.onSet = f => { if (f === "tipo") FS.cat = ""; if (f === "cal") { FS.cal = FS.cal === true || FS.cal === "true"; } if (f === "data") FS.cal = false; };
+  FS.onSet = f => { if (f === "tipo") FS.cat = ""; if (f === "cal") { FS.cal = FS.cal === true || FS.cal === "true"; if (FS.cal) setTimeout(() => $(".cal")?.scrollIntoView({ block: "nearest", behavior: "smooth" }), 30); } if (f === "data") FS.cal = false; };
   FS.smart = txt => { const keep = { cal: FS.cal, calM: FS.calM }; parseSmart(txt, FS); Object.assign(FS, keep); const c = FS.cat || guessCat(FS.d, FS.tipo); FS.smartMsg = txt.trim() ? `Entendi: <b>${{ saida: "saída", entrada: "entrada", invest: "investimento" }[FS.tipo]}</b>${FS.v ? " · " + brl(num(FS.v)) : ""}${FS.rep === "parc" ? ` · ${FS.n}x` : FS.rep === "mes" ? " · todo mês" : ""} · ${esc(FS.d || "sem nome")} · ${esc(cat(c).n)} · ${esc(conta(FS.conta).n)} · ${fdate(FS.data)}` : ""; FS.draw(); };
   FS.save = () => {
     const f = FS, v = num(f.v); if (!v) { toast("Informe o valor"); return; }
@@ -541,8 +594,9 @@ async function refreshSocial() {
     FR.profile = await Social.profile();
     if (!FR.profile && !FR.autoTried) { FR.autoTried = true; await autoHandle(); }
     if (FR.profile) { FR.friends = await Social.friends(); linkFriends(); FR.inbox = S.keys ? await Social.inbox(S.keys, FR.friends) : []; await pushShares(); }
-    const sig = JSON.stringify([FR.profile?.handle, FR.friends.map(f => [f.id, f.status]), FR.inbox.map(s => [s.sid, s.v, s.ini, s.n, s.fim, s.d])]);
-    softRender(sig);
+    const sig = JSON.stringify([FR.profile?.handle, FR.friends.map(f => [f.id, f.status]), FR.inbox.map(s => [s.sid, s.v, s.ini, s.n, s.fim, s.d, s.rec, s.meses])]);
+    FR.friends.filter(f => f.status === "pending" && !f.mine).forEach(f => localNotify("fluo.fr." + f.id, "Pedido de amizade", "@" + f.handle + " quer te adicionar"));
+    softRender(sig); notifyAcks();
   } catch (e) { /* tabelas de amigos ainda não existem ou sem rede: o app segue normal */ }
 }
 /* redesenha só quando algo mudou e a tela está livre (sem janela aberta nem digitação); se estiver ocupada, tenta de novo logo depois */
@@ -585,14 +639,20 @@ async function pushShares() {
     const frs = Object.fromEntries(FR.friends.filter(f => f.status === "accepted").map(f => [f.uid, f])), want = {};
     const add = (it, src) => (it.rach || []).forEach((r, i) => {
       const p = S.pessoas.find(x => x.id === r.p); if (!p?.amigo || !frs[p.amigo.uid] || !r.sid) return;
-      want[r.sid] = { to: p.amigo.uid, obj: { d: it.d, src, v: shares(it).outros[i].v, n: it.n, ini: src === "rec" ? it.inicio : startM(it), fim: it.fim, dia: it.dia || +String(it.data || "").slice(8) || 10 } };
+      want[r.sid] = { to: p.amigo.uid, obj: { rec: Object.keys(S.pagos).filter(m => S.pagos[m]["rach:" + r.p]).sort(), d: it.d, src, v: shares(it).outros[i].v, n: it.n, ini: src === "rec" ? it.inicio : startM(it), fim: it.fim, dia: it.dia || +String(it.data || "").slice(8) || 10 } };
     });
+    /* avisa quem me enviou a divisão de quais meses eu marquei como pagos (a resposta também é um "share", só que de volta) */
+    S.acks ??= {};
+    FR.inbox.filter(s => !s.ack && frs[s.uid]).forEach(s => { const meses = Object.keys(S.pagos).filter(m => S.pagos[m]["amigo:" + s.sid]).sort(); if (!meses.length && !S.acks[s.sid]) return; const id = S.acks[s.sid] ??= crypto.randomUUID(); want[id] = { to: s.uid, obj: { ack: 1, of: s.sid, meses } }; });
     S.avulsos.forEach(it => add(it, "avulso")); S.parcelas.forEach(it => add(it, "parc")); S.recorrentes.forEach(it => add(it, "rec"));
     let dirty = false;
     for (const [sid, w] of Object.entries(want)) { const j = JSON.stringify(w.obj); if (S.sent[sid]?.j === j && S.sent[sid]?.to === w.to) continue; try { await Social.send(sid, w.to, frs[w.to].pub, S.keys, w.obj, false); S.sent[sid] = { to: w.to, j }; dirty = true; } catch (e) {} }
     for (const [sid, s] of Object.entries(S.sent)) { if (want[sid]) continue; try { if (frs[s.to]) await Social.send(sid, s.to, frs[s.to].pub, S.keys, null, true); delete S.sent[sid]; dirty = true; } catch (e) {} }
     if (dirty) Store.save(S);
   } finally { pushing = false; }
+}
+function notifyAcks() {
+  S.pessoas.forEach(p => { const r = relacao(p, NOW); if (!r.said) return; const key = "fluo.ack." + NOW + "." + p.id; localNotify(key, p.n + " marcou como pago", "confirme no Início quando receber"); });
 }
 function schedulePush() { if (!FR.profile) return; clearTimeout(pushT); pushT = setTimeout(pushShares, 1500); }
 addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && S && Date.now() - FR.last > 20000) refreshSocial(); });
@@ -620,10 +680,13 @@ if (location.hostname === "localhost") window.__fluo = { get S() { return S; }, 
 const A = {
   go: d => { cur = d.k; render(false); },
   nav: d => { page = d.p; render(true); if (["carteira", "plano", "pagar"].includes(d.p) && Date.now() - FR.last > 20000) refreshSocial(); },
-  pay: (d, b) => { (S.pagos[cur] ??= {}); const k = d.k; S.pagos[cur][k] = !S.pagos[cur][k]; const keep = d.keep; Store.save(S); const open = !$("#sheet").hidden; render(false); if (open && keep) { const id = k.slice(5); if ($("#sheet h3")) { const pc = S.contas.find(c => c.id === id); pc?.pessoa ? pessoaSheet(pc.pessoa) : contaSheet(id); } } toast(S.pagos[cur][k] ? "Pago ✓" : "Reaberto"); },
+  pay: (d, b) => { if (d.k.startsWith("pn:")) { const id = d.k.slice(3), r = relacao(pessoa(id), cur), st = !r.paid; setRel(r, st); Store.save(S); schedulePush(); render(false); if (!$("#sheet").hidden) pessoaSheet(id); toast(st ? "Pago ✓" : "Reaberto"); return; }
+    (S.pagos[cur] ??= {}); schedulePush(); const k = d.k; S.pagos[cur][k] = !S.pagos[cur][k]; const keep = d.keep; Store.save(S); const open = !$("#sheet").hidden; render(false); if (open && keep) { const id = k.slice(5); if ($("#sheet h3")) { const pc = S.contas.find(c => c.id === id); pc?.pessoa ? pessoaSheet(pc.pessoa) : contaSheet(id); } } toast(S.pagos[cur][k] ? "Pago ✓" : "Reaberto"); },
+  view: d => itemSheet(d.src, d.id),
   edit: d => { const arr = { rec: S.recorrentes, parc: S.parcelas, avulso: S.avulsos }[d.src], it = arr?.find(x => x.id === d.id); if (it) lancar(it, d.src); },
+  verext: d => { filtro = d.v; busca = ""; page = "extrato"; render(true); },
   filtro: d => { filtro = d.v; render(false); }, agrupar: d => { agrupar = d.v; render(false); }, plano: d => { plano = d.v; render(false); },
-  conta: d => contaSheet(d.id), pessoa: d => pessoaSheet(d.id), evento: d => eventoSheet(d.id),
+  conta: d => contaSheet(d.id), catv: d => catSheet(d.id), pessoa: d => pessoaSheet(d.id), evento: d => eventoSheet(d.id),
   novaConta: () => contaForm(), editConta: d => contaForm(d.id), novaPessoa: () => pessoaForm(), editPessoa: d => pessoaForm(d.id), novaDivida: d => dividaForm(d.p),
   novoEvento: () => eventoForm(), editEvento: d => eventoForm(d.id), novaMeta: () => metaForm(), meta: d => metaForm(d.id), novaCat: () => catForm(), editCat: d => catForm(d.id),
   pagarDivida: d => { const dv = S.dividas.find(x => x.id === d.id), s0 = snap(); const v = d.part ? num($("#pg" + d.id)?.value) : restante(dv); if (!v) return; (dv.pagtos ??= []).push({ v: Math.min(v, restante(dv)), data: today() }); Store.save(S); render(false); pessoaSheet(dv.pessoa); toast("Pagamento registrado", s0); },
@@ -631,7 +694,7 @@ const A = {
   tema: d => { S.prefs.theme = d.val; applyTheme(); commit(); },
   rachTog: d => { const i = FS.rach.findIndex(r => r.p === d.p); if (i >= 0) FS.rach.splice(i, 1); else FS.rach.push({ p: d.p, m: "igual" }); FS.draw(); },
   rachMode: d => { const r = FS.rach.find(x => x.p === d.p); if (r) r.m = d.m; FS.draw(); },
-  recebido: d => { (S.pagos[cur] ??= {}); const k = "rach:" + d.id; S.pagos[cur][k] = !S.pagos[cur][k]; Store.save(S); const open = !$("#sheet").hidden; render(false); if (open) pessoaSheet(d.id); toast(S.pagos[cur][k] ? "Recebido ✓" : "Reaberto"); },
+  recebido: d => { const r = relacao(pessoa(d.id), cur), st = !S.pagos[cur]?.["rach:" + d.id]; setRel(r, st); Store.save(S); schedulePush(); const open = !$("#sheet").hidden; render(false); if (open) pessoaSheet(d.id); toast(st ? "Recebido ✓" : "Reaberto"); },
   meuHandle: () => handleForm(),
   ajTab: d => { ajTab = d.v; render(false); if (d.v === "social" && Date.now() - FR.last > 15000) refreshSocial(); },
   copiarHandle: () => { navigator.clipboard?.writeText("@" + FR.profile.handle).then(() => toast("@ copiado"), () => toast("Não foi possível copiar")); },
@@ -675,6 +738,13 @@ document.addEventListener("pointerdown", e => { const t = FS?.cp && e.target.clo
 document.addEventListener("pointermove", e => { if (cpDrag) cpMove(e); });
 document.addEventListener("pointerup", () => { if (cpDrag) { cpDrag = null; FS.draw(); } });
 document.addEventListener("change", e => { if (FS?.cp && e.target.classList?.contains("cp-hex")) FS.draw(); });
+/* campos de dinheiro: digita só números e eles entram pelos centavos (399 → 3,99) */
+document.addEventListener("input", e => {
+  const t = e.target;
+  if (!(["v", "orc", "alvo", "atual", "limite"].includes(t.dataset?.f) || /^pg/.test(t.id || "")) || t.tagName !== "INPUT") return;
+  const d = t.value.replace(/\D/g, "").replace(/^0+/, "");
+  t.value = d ? (+d / 100).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "";
+});
 document.addEventListener("input", e => {
   const t = e.target;
   if (t.dataset?.rx && FS?.rach) { const r = FS.rach.find(x => x.p === t.dataset.rx); if (r) { r.vs = t.value; r.v = num(t.value); const n = Math.max(2, +FS.n || 2), v = FS.rep === "parc" && FS.tot ? num(FS.v) / n : num(FS.v), el = $("#rxsum"); if (el) el.innerHTML = rxSum(FS, shares({ v, rach: FS.rach })); } return; }
@@ -683,7 +753,7 @@ document.addEventListener("input", e => {
   if (t.dataset.f === "fecha" || t.dataset.f === "venc") { const fe = $('#fb [data-f="fecha"]'), ve = $('#fb [data-f="venc"]'), F = +FS.fecha, V = +FS.venc; if (fe && ve) { ve.placeholder = F && !V ? vencDeFecha(F) + " (calculado)" : "ex.: 10"; fe.placeholder = V && !F ? fechaDeVenc(V) + " (calculado)" : "ex.: 3"; } }
   if (["v", "n", "tot"].includes(t.dataset.f) && FS.rep === "parc") { const keep = t.selectionStart; FS.draw(); const nx = $(`#fb [data-f="${t.dataset.f}"]`); if (nx) { nx.focus(); try { nx.setSelectionRange(keep, keep); } catch (e) {} } }
 });
-addEventListener("keydown", e => { if (e.key === "Enter" && e.target.id === "addH") { e.preventDefault(); A.amigoEnviar(); } if (e.key === "Escape") closeSheet(); if (e.key === "Enter" && FS && e.target.matches("input") && e.target.dataset.f) { e.preventDefault(); FS.save(); } });
+addEventListener("keydown", e => { if ((e.key === "n" || e.key === "+") && !e.ctrlKey && !e.metaKey && !e.altKey && !e.target.closest("input,textarea,select,[contenteditable]") && $("#sheet").hidden && !$("#app").hidden) { e.preventDefault(); A.lancar(); } if (e.key === "Enter" && e.target.id === "addH") { e.preventDefault(); A.amigoEnviar(); } if (e.key === "Escape") closeSheet(); if (e.key === "Enter" && FS && e.target.matches("input") && e.target.dataset.f) { e.preventDefault(); FS.save(); } });
 
 /* ---------- shell ---------- */
 const PAGES = [["inicio", "Início", pgInicio], ["pagar", "Pagar", pgPagar], ["extrato", "Extrato", pgExtrato], ["carteira", "Carteira", pgCarteira], ["plano", "Compromissos", pgPlano], ["futuro", "Futuro", pgFuturo], ["ajustes", "Ajustes", pgAjustes]];
@@ -747,6 +817,7 @@ let confirmFn = null;
 A.apagar = () => { confirmFn = () => { const s0 = snap(); S = baseState(); commit("Dados apagados", s0); }; openSheet(`<h3>Apagar tudo?</h3><p class="lede">Lançamentos, cartões, pessoas e metas serão apagados. Dá para desfazer logo depois.</p><div class="acts"><button class="primary" data-a="confirmYes" style="background:var(--neg)">Apagar tudo</button><button class="secondary" data-a="x">Cancelar</button></div>`); };
 A.confirmYes = () => { closeSheet(); confirmFn?.(); };
 A.avisosOn = async () => {
+  closeSheet();
   if (!("Notification" in window)) return toast("Este navegador não permite notificações");
   const p = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
   if (p === "granted") { ls.set("fluo.avisos", "1"); pushNotices(); toast("Avisos ativados neste aparelho"); render(false); } else toast("Permissão negada no navegador");
@@ -758,10 +829,31 @@ $("#cfg").onclick = () => A.nav({ p: "ajustes" });
 $("#eye").onclick = () => { S.prefs.priv = !S.prefs.priv; applyTheme(); Store.save(S); render(false); };
 Store.onStatus(s => { if (s === "err") setTimeout(() => Store.flush(), 8000); if (s === "conflict") Store.reload().then(st => { S = st; render(false); toast("Seus dados mudaram em outro aparelho. Atualizei."); }); const el = $("#sync"); el.className = "sync " + s; el.textContent = { busy: "salvando…", ok: "salvo", err: "sem conexão — tentando de novo", conflict: "outro aparelho salvou: recarregue" }[s] || s; });
 
+/* 1ª abertura: oferece os avisos uma vez (o navegador só deixa pedir a permissão a partir de um toque) */
+function askNotif() {
+  if (!("Notification" in window) || Notification.permission !== "default" || ls.get("fluo.notifAsked")) return; ls.set("fluo.notifAsked", "1");
+  openSheet(`<h3>Quer receber avisos?</h3><p class="lede">O Fluo avisa quando uma fatura ou conta está perto de vencer, quando é o melhor dia de compra no cartão e quando alguém marca que te pagou.</p><div class="acts"><button class="primary" data-a="avisosOn">Ativar avisos</button><button class="secondary" data-x>Agora não</button></div>`, true);
+}
+/* bloqueio: se o app ficou 5 min ou mais em segundo plano e a biometria está ligada, pede de novo ao voltar */
+let hiddenAt = 0, locked = false;
+function lockApp() {
+  if (locked) return; locked = true;
+  const el = document.createElement("div"); el.id = "lock"; el.className = "lock"; el.setAttribute("role", "dialog"); el.setAttribute("aria-modal", "true");
+  el.innerHTML = `<div class="lock-in">${MARK}<h2>Fluo bloqueado</h2><p id="lkMsg">Confirme com a biometria para continuar.</p><button class="primary" id="lkGo">Desbloquear</button><button class="ghost" id="lkOut">Sair e entrar com a senha</button></div>`;
+  document.body.appendChild(el);
+  $("#lkGo").onclick = async () => { const b = $("#lkGo"); b.disabled = true; try { await Store.bioCheck(Store.user.email); el.remove(); locked = false; } catch (e) { $("#lkMsg").textContent = "Não deu certo. Tente de novo."; b.disabled = false; } };
+  $("#lkOut").onclick = async () => { try { await Store.signOut(); } catch (e) {} location.reload(); };
+  setTimeout(() => $("#lkGo")?.click(), 350);
+}
+addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") { hiddenAt = Date.now(); return; }
+  if (S && hiddenAt && Date.now() - hiddenAt >= 5 * 60 * 1000 && Store.user && Store.bioEnabled(Store.user.email)) lockApp();
+  hiddenAt = 0;
+});
 function enter(state) {
   clearInterval(window.__lgT); S = state; S.pagos ??= {}; S.metas ??= []; S.eventos ??= []; S.prefs ??= { theme: "auto", priv: false };
   $("#auth").hidden = true; $("#app").hidden = false; $("#dock").hidden = false;
-  $("#who").textContent = Store.user?.email || ""; Store.bioSupported().then(v => { bioOk = v; if (page === "ajustes") render(false); }); applyTheme(); render(true); setTimeout(pushNotices, 1500);
+  $("#who").textContent = Store.user?.email || ""; Store.bioSupported().then(v => { bioOk = v; if (page === "ajustes") render(false); }); applyTheme(); render(true); setTimeout(pushNotices, 1500); setTimeout(askNotif, 3000);
   FR.profile = null; FR.friends = []; FR.inbox = []; FR.sig = ""; FR.autoTried = false; FR.err = false; setTimeout(refreshSocial, 900);
   if (!window.__frT) window.__frT = setInterval(() => { if (document.visibilityState === "visible" && S && Date.now() - FR.last > 80000) refreshSocial(); }, 30000);
 }
