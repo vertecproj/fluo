@@ -1,22 +1,29 @@
 name: keepalive
-# 1x por semana: chama o Supabase (projeto gratis pausa apos 7 dias sem uso)
-# e grava a data em keepalive.txt (o GitHub desliga agendamentos de repositorios parados ha 60 dias).
+# Todo dia: usa o Supabase de verdade (banco, tabela e login) para o projeto gratis nao pausar.
+# Em 29/10/2026 o projeto pausou mesmo com o ping semanal em rpc/ping funcionando: 1x por semana nao bastou.
+# Segunda-feira tambem grava a data em keepalive.txt (o GitHub desliga agendamentos de repositorios parados ha 60 dias).
 on:
   schedule:
-    - cron: "0 12 * * 1"
+    - cron: "17 12 * * *"
   workflow_dispatch: {}
 permissions:
   contents: write
+env:
+  SB: https://zckbxbedwddqcczcwnwi.supabase.co
+  KEY: sb_publishable_zVWTld9W69XXGaBrG_8IRg_kt6l_XWT
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Ping Supabase
+      - name: Usar o Supabase
         run: |
-          curl -fsS -X POST "https://zckbxbedwddqcczcwnwi.supabase.co/rest/v1/rpc/ping" -H "apikey: sb_publishable_zVWTld9W69XXGaBrG_8IRg_kt6l_XWT" -H "Content-Type: application/json" -d "{}"
+          curl -fsS -X POST "$SB/rest/v1/rpc/ping" -H "apikey: $KEY" -H "Content-Type: application/json" -d "{}"
+          curl -fsS "$SB/rest/v1/vaults?select=user_id&limit=1" -H "apikey: $KEY"
+          curl -fsS "$SB/auth/v1/settings" -H "apikey: $KEY" > /dev/null
       - name: Registrar atividade
         run: |
+          [ "$(date -u +%u)" = "1" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ] || exit 0
           date -u +"%Y-%m-%dT%H:%M:%SZ" > keepalive.txt
           git config user.name "keepalive-bot"
           git config user.email "actions@users.noreply.github.com"
